@@ -1,0 +1,296 @@
+name: Data Discretizer v1.0
+description: |
+  Data discretization for clustering preprocessing.
+  Implements methods from section 3.5 of the framework:
+  - Equal width binning
+  - Equal frequency binning  
+  - K-means discretization
+  - Quantile-based binning
+  
+  Converts continuous attributes to discrete intervals.
+
+inputs:
+  - {name: input_data, type: Dataset, description: 'Input dataset after scaling'}
+  - {name: scaling_metadata, type: Data, description: 'Metadata from previous step', optional: true}
+  - {name: method, type: String, default: "none", description: 'Method: none, equal_width, equal_freq, kmeans, quantile'}
+  - {name: n_bins, type: Integer, default: "5", description: 'Number of bins for discretization'}
+  - {name: encode_labels, type: String, default: "ordinal", description: 'Bin encoding: ordinal, onehot'}
+  - {name: columns_to_discretize, type: String, default: "all", description: 'Columns to discretize (comma-separated or "all")'}
+
+outputs:
+  - {name: final_data, type: Dataset, description: 'Final preprocessed dataset ready for clustering'}
+  - {name: discretization_metadata, type: Data, description: 'Discretization metadata with bin edges'}
+  - {name: preprocessing_summary, type: Data, description: 'Complete preprocessing pipeline summary'}
+
+implementation:
+  container:
+    image: python:3.9-slim
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import os, sys, json, argparse
+        import subprocess
+        
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
+                       "pandas", "numpy", "pyarrow", "scikit-learn"], check=True)
+        
+        import pandas as pd
+        import numpy as np
+        from datetime import datetime
+        from sklearn.preprocessing import KBinsDiscretizer
+        from sklearn.cluster import KMeans
+        
+        def ensure_dir(path):
+            d = os.path.dirname(path)
+            if d and not os.path.exists(d):
+                os.makedirs(d, exist_ok=True)
+        
+        def discretize_equal_width(X, n_bins):
+            """Equal width binning"""
+            discretizer = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='uniform')
+            X_binned = discretizer.fit_transform(X)
+            
+            bin_edges = discretizer.bin_edges_
+            
+            return X_binned, bin_edges
+        
+        def discretize_equal_freq(X, n_bins):
+            """Equal frequency (quantile) binning"""
+            discretizer = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile')
+            X_binned = discretizer.fit_transform(X)
+            
+            bin_edges = discretizer.bin_edges_
+            
+            return X_binned, bin_edges
+        
+        def discretize_kmeans(X, n_bins):
+            """K-means based discretization"""
+            discretizer = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='kmeans')
+            X_binned = discretizer.fit_transform(X)
+            
+            bin_edges = discretizer.bin_edges_
+            
+            return X_binned, bin_edges
+        
+        def discretize_quantile(X, n_bins):
+            """Quantile-based discretization"""
+            # Similar to equal frequency but with explicit quantiles
+            quantiles = np.linspace(0, 1, n_bins + 1)
+            
+            X_binned = np.zeros_like(X)
+            bin_edges = []
+            
+            for i in range(X.shape[1]):
+                col = X[:, i]
+                edges = np.quantile(col, quantiles)
+                edges = np.unique(edges)  # Remove duplicates
+                
+                X_binned[:, i] = np.digitize(col, edges[1:-1])
+                bin_edges.append(edges.tolist())
+            
+            return X_binned, bin_edges
+        
+        # Main execution
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--input_data', type=str, required=True)
+        parser.add_argument('--scaling_metadata', type=str)
+        parser.add_argument('--method', type=str, default='none')
+        parser.add_argument('--n_bins', type=int, default=5)
+        parser.add_argument('--encode_labels', type=str, default='ordinal')
+        parser.add_argument('--columns_to_discretize', type=str, default='all')
+        parser.add_argument('--final_data', type=str, required=True)
+        parser.add_argument('--discretization_metadata', type=str, required=True)
+        parser.add_argument('--preprocessing_summary', type=str, required=True)
+        args = parser.parse_args()
+        
+        try:
+            print("=" * 80)
+            print("CLUSTERING PREPROCESSING - COMPONENT 6: DATA DISCRETIZER")
+            print("=" * 80)
+            
+            # Load data
+            df = pd.read_parquet(args.input_data)
+            print(f"[LOAD] Input shape: {df.shape}")
+            
+            # Determine columns to discretize
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            if args.columns_to_discretize.lower() == 'all':
+                cols_to_discretize = numeric_cols
+            else:
+                specified_cols = [c.strip() for c in args.columns_to_discretize.split(',')]
+                cols_to_discretize = [c for c in specified_cols if c in numeric_cols]
+            
+            print(f"[ANALYZE] Numeric columns: {len(numeric_cols)}")
+            print(f"[ANALYZE] Columns to discretize: {len(cols_to_discretize)}")
+            
+            method = args.method.lower()
+            
+            if method == 'none' or len(cols_to_discretize) == 0:
+                print(f"\n[SKIP] Discretization disabled or no columns to discretize")
+                df_out = df.copy()
+                method_used = 'none'
+                discretization_info = {'reason': 'disabled' if method == 'none' else 'no_columns'}
+                bin_edges_info = None
+                
+            else:
+                print(f"\n[METHOD] Using: {method}")
+                print(f"\n[DISCRETIZE] Converting {len(cols_to_discretize)} columns to {args.n_bins} bins...")
+                
+                # Prepare data
+                X = df[cols_to_discretize].values
+                
+                # Apply discretization
+                if method == 'equal_width':
+                    X_binned, bin_edges = discretize_equal_width(X, args.n_bins)
+                elif method == 'equal_freq':
+                    X_binned, bin_edges = discretize_equal_freq(X, args.n_bins)
+                elif method == 'kmeans':
+                    X_binned, bin_edges = discretize_kmeans(X, args.n_bins)
+                elif method == 'quantile':
+                    X_binned, bin_edges = discretize_quantile(X, args.n_bins)
+                else:
+                    print(f"  ⚠ Unknown method '{method}', using equal_width")
+                    X_binned, bin_edges = discretize_equal_width(X, args.n_bins)
+                    method = 'equal_width'
+                
+                method_used = method
+                
+                # Create output dataframe
+                binned_col_names = [f"{col}_binned" for col in cols_to_discretize]
+                df_binned = pd.DataFrame(X_binned, columns=binned_col_names, index=df.index)
+                
+                # Combine with original data (remove discretized columns, add binned versions)
+                other_cols = [c for c in df.columns if c not in cols_to_discretize]
+                df_out = pd.concat([df[other_cols], df_binned], axis=1)
+                
+                # Prepare bin edges info
+                bin_edges_info = {}
+                for i, col in enumerate(cols_to_discretize):
+                    if isinstance(bin_edges, list):
+                        edges = bin_edges[i] if i < len(bin_edges) else []
+                    else:
+                        edges = bin_edges[i].tolist() if hasattr(bin_edges[i], 'tolist') else []
+                    
+                    bin_edges_info[col] = {
+                        'n_bins': args.n_bins,
+                        'bin_edges': edges[:20]  # Limit to first 20
+                    }
+                
+                discretization_info = {
+                    'method': method_used,
+                    'n_bins': args.n_bins,
+                    'columns_discretized': cols_to_discretize
+                }
+                
+                print(f"  ✓ Discretized {len(cols_to_discretize)} columns into {args.n_bins} bins")
+            
+            # Load all previous metadata to create summary
+            print(f"\n[SUMMARY] Creating preprocessing pipeline summary...")
+            
+            summary = {
+                'timestamp': datetime.utcnow().isoformat() + 'Z',
+                'pipeline_components': [
+                    '1. Data Loading',
+                    '2. Missing Values Handling',
+                    '3. Outlier Detection',
+                    '4. Dimensionality Reduction',
+                    '5. Data Scaling',
+                    '6. Discretization'
+                ],
+                'final_shape': {
+                    'rows': int(df_out.shape[0]),
+                    'cols': int(df_out.shape[1])
+                },
+                'discretization': {
+                    'method': method_used,
+                    'info': discretization_info
+                },
+                'data_ready_for_clustering': True,
+                'recommended_algorithms': []
+            }
+            
+            # Add algorithm recommendations based on final data characteristics
+            n_samples = len(df_out)
+            n_features = len(df_out.select_dtypes(include=[np.number]).columns)
+            
+            if n_samples < 1000 and n_features <= 10:
+                summary['recommended_algorithms'] = ['K-means', 'Hierarchical', 'DBSCAN']
+            elif n_samples >= 1000 and n_features <= 20:
+                summary['recommended_algorithms'] = ['K-means', 'MiniBatch K-means', 'DBSCAN']
+            elif n_features > 20:
+                summary['recommended_algorithms'] = ['K-means', 'BIRCH', 'MiniBatch K-means']
+            else:
+                summary['recommended_algorithms'] = ['K-means', 'DBSCAN', 'Hierarchical']
+            
+            # Save outputs
+            print(f"\n[SAVE] Saving outputs...")
+            ensure_dir(args.final_data)
+            ensure_dir(args.discretization_metadata)
+            ensure_dir(args.preprocessing_summary)
+            
+            df_out.to_parquet(args.final_data, index=False)
+            print(f"  ✓ Data: {args.final_data}")
+            
+            discretization_metadata = {
+                'timestamp': datetime.utcnow().isoformat() + 'Z',
+                'component': 'data_discretizer',
+                'method_used': method_used,
+                'discretization_info': discretization_info,
+                'bin_edges': bin_edges_info,
+                'final_shape': {
+                    'rows': int(df_out.shape[0]),
+                    'cols': int(df_out.shape[1])
+                }
+            }
+            
+            with open(args.discretization_metadata, 'w') as f:
+                json.dump(discretization_metadata, f, indent=2)
+            print(f"  ✓ Metadata: {args.discretization_metadata}")
+            
+            with open(args.preprocessing_summary, 'w') as f:
+                json.dump(summary, f, indent=2)
+            print(f"  ✓ Summary: {args.preprocessing_summary}")
+            
+            print("\n" + "=" * 80)
+            print("COMPONENT 6 COMPLETE")
+            print("=" * 80)
+            print(f"Method: {method_used}")
+            if method_used != 'none':
+                print(f"Discretized {len(cols_to_discretize)} columns")
+            print(f"Final shape: {df_out.shape[0]} rows × {df_out.shape[1]} columns")
+            print("\n" + "="*80)
+            print("CLUSTERING PREPROCESSING PIPELINE COMPLETE!")
+            print("="*80)
+            print(f"\n✓ Data is ready for clustering algorithms")
+            print(f"✓ Recommended algorithms: {', '.join(summary['recommended_algorithms'])}")
+            print(f"✓ Final dataset: {df_out.shape[0]} samples × {df_out.shape[1]} features")
+            print("\n" + "="*80 + "\n")
+            
+        except Exception as e:
+            print(f"\n[ERROR] {str(e)}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+    
+    args:
+      - --input_data
+      - {inputPath: input_data}
+      - --scaling_metadata
+      - {inputPath: scaling_metadata}
+      - --method
+      - {inputValue: method}
+      - --n_bins
+      - {inputValue: n_bins}
+      - --encode_labels
+      - {inputValue: encode_labels}
+      - --columns_to_discretize
+      - {inputValue: columns_to_discretize}
+      - --final_data
+      - {outputPath: final_data}
+      - --discretization_metadata
+      - {outputPath: discretization_metadata}
+      - --preprocessing_summary
+      - {outputPath: preprocessing_summary}
