@@ -62,7 +62,7 @@ implementation:
                 os.makedirs(directory, exist_ok=True)
         
         def get_token_value(token_arg):
-            """Extract token from file or return direct value"""
+            #Extract token from file or return direct value#
             if not token_arg:
                 logger.info("Token argument is None or empty")
                 return None
@@ -85,7 +85,7 @@ implementation:
                 return token_str if token_str and token_str != "None" else None
         
         def extract_records(body):
-            """Extract records from API response"""
+            #Extract records from API response#
             if isinstance(body, list):
                 return body
             if isinstance(body, dict):
@@ -97,7 +97,7 @@ implementation:
             return []
         
         def discover_page_metadata(body):
-            """Discover pagination metadata from response"""
+            #Discover pagination metadata from response#
             page_size = None
             total_pages = None
             total_instances = None
@@ -123,7 +123,7 @@ implementation:
             return page_size, total_pages, total_instances
         
         def build_api_url(base_url, schema_id, page, size, show_ref, show_dbaas, show_meta):
-            """Build complete API URL with query parameters"""
+            #Build complete API URL with query parameters#
             base_url = base_url.rstrip('/')
             url = "{}/schemas/{}/instances/list".format(base_url, schema_id)
             
@@ -139,7 +139,7 @@ implementation:
         
         def fetch_pi_schema_data(session, base_url, schema_id, headers, page_size, max_pages, 
                                  show_ref, show_dbaas, show_meta, start_page):
-            """Fetch all data from PI schema with pagination"""
+            #Fetch all data from PI schema with pagination#
             
             logger.info("Starting data fetch from schema: {}".format(schema_id))
             logger.info("Page size: {}, Max pages: {}".format(
@@ -217,7 +217,7 @@ implementation:
             return all_records
         
         def select_features(df, feature_list):
-            """Select specific features from dataframe"""
+            #Select specific features from dataframe#
             if not feature_list:
                 return df
             
@@ -239,7 +239,7 @@ implementation:
             return df[available]
         
         def drop_metadata_cols(df):
-            """Drop PI metadata columns"""
+            #Drop PI metadata columns#
             metadata_cols = [
                 "piMetadata", "execution_timestamp", "pipelineid",
                 "component_id", "projectid", "created_at", "updated_at",
@@ -254,7 +254,7 @@ implementation:
             return df
         
         def validate_for_clustering(df):
-            """Validate data is ready for clustering"""
+            #Validate data is ready for clustering#
             validation = {
                 'is_valid': True,
                 'errors': [],
@@ -495,3 +495,4 @@ implementation:
       - {outputPath: processed_dataset}
       - --schema_json
       - {outputPath: schema_json}
+
