@@ -1,85 +1,215 @@
-name: Data Loader for Clustering v1.0
+name: PI Schema Data Loader for Clustering v1.0
 description: |
-  Generic data loading component for clustering preprocessing pipeline.
-  Supports multiple formats and provides comprehensive validation.
-  Based on the generic framework for clustering preprocessing.
+  Load data from PI schemas for clustering preprocessing.
+  Supports:
+  - Multiple PI schema queries
+  - Feature selection from schema attributes
+  - Pagination handling
+  - Data merging from multiple sources
+  - No train-test split (clustering is unsupervised)
 
 inputs:
-  - {name: input_path, type: String, description: 'Path to input data file or URL'}
-  - {name: file_format, type: String, default: "auto", description: 'Format: auto, csv, parquet, excel, json, tsv'}
-  - {name: encoding, type: String, default: "utf-8", description: 'File encoding (utf-8, latin1, cp1252)'}
-  - {name: csv_separator, type: String, default: ",", description: 'CSV separator character'}
-  - {name: handle_duplicates, type: String, default: "remove", description: 'Duplicate handling: remove, keep_first, keep_last, keep_all'}
-  - {name: min_samples_threshold, type: Integer, default: "2", description: 'Minimum samples required for clustering'}
+  # Connection parameters
+  - {name: api_url, type: String, description: 'Base API URL for PI schema queries'}
+  - {name: access_token, type: String, description: 'Bearer access token for API authentication'}
+  
+  # Schema selection (supports multiple schemas)
+  - {name: schema_configs, type: String, description: 'JSON array of schema configurations: [{"entityId": "schema1", "features": ["col1", "col2"]}, ...]'}
+  
+  # Alternative: single schema (backward compatible)
+  - {name: entity_id, type: String, default: "", optional: true, description: '[Single schema] Entity ID to query'}
+  - {name: feature_list, type: String, default: "", optional: true, description: '[Single schema] Comma-separated list of features to select'}
+  
+  # Query parameters
+  - {name: db_type, type: String, default: "TIDB", description: 'Database type (TIDB, etc.)'}
+  - {name: owned_only, type: String, default: "false", description: 'Filter for owned entities only'}
+  - {name: start_time, type: Integer, default: "0", optional: true, description: 'Start timestamp filter (0 = no filter)'}
+  - {name: end_time, type: Integer, default: "0", optional: true, description: 'End timestamp filter (0 = no filter)'}
+  - {name: custom_filter, type: String, default: "{}", optional: true, description: 'Custom filter JSON object'}
+  
+  # Pagination parameters
+  - {name: page_size, type: Integer, default: "2000", description: 'Page size for pagination'}
+  - {name: max_pages, type: Integer, default: "0", description: 'Max pages to fetch (0 = all pages)'}
+  
+  # Data processing
+  - {name: merge_strategy, type: String, default: "outer", description: 'How to merge multiple schemas: inner, outer, left'}
+  - {name: merge_key, type: String, default: "", optional: true, description: 'Column to merge on (if merging schemas)'}
+  - {name: drop_metadata_columns, type: String, default: "true", description: 'Drop PI metadata columns (piMetadata, execution_timestamp, etc.)'}
   - {name: validate_clustering_readiness, type: String, default: "true", description: 'Validate data is ready for clustering'}
 
 outputs:
-  - {name: loaded_data, type: Dataset, description: 'Loaded dataset (parquet)'}
-  - {name: load_metadata, type: Data, description: 'Loading metadata and validation results (JSON)'}
+  - {name: loaded_data, type: Dataset, description: 'Loaded and merged dataset from PI schemas'}
+  - {name: load_metadata, type: Data, description: 'Loading metadata with schema info and statistics'}
 
 implementation:
   container:
-    image: python:3.9-slim
+    image: gurpreetgandhi/nesy-factory:vtest4
     command:
       - python3
       - -u
       - -c
       - |
-        import os, sys, json, argparse
-        from pathlib import Path
-        import subprocess
-        
-        # Install dependencies
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
-                       "pandas", "numpy", "pyarrow", "openpyxl", "xlrd"], check=True)
-        
+        import argparse
+        import os
+        import sys
+        import json
         import pandas as pd
         import numpy as np
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import logging
         from datetime import datetime
-        
+
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='[%(levelname)s] %(message)s'
+        )
+        logger = logging.getLogger("pi_schema_loader")
+
         def ensure_dir(path):
             d = os.path.dirname(path)
             if d and not os.path.exists(d):
                 os.makedirs(d, exist_ok=True)
-        
-        def auto_detect_format(path):
-            ext = Path(path).suffix.lower()
-            format_map = {
-                '.csv': 'csv', '.tsv': 'tsv', '.txt': 'csv',
-                '.parquet': 'parquet', '.pq': 'parquet',
-                '.xlsx': 'excel', '.xls': 'excel',
-                '.json': 'json', '.jsonl': 'json', '.ndjson': 'json'
-            }
-            return format_map.get(ext, 'csv')
-        
-        def load_data(path, fmt, encoding, sep):
-            print(f"[LOAD] Loading from: {path}")
-            print(f"[LOAD] Format: {fmt}, Encoding: {encoding}, Separator: {repr(sep)}")
+
+        def extract_records(body):
+            #Extract records from API response#
+            if isinstance(body, list):
+                return body
+            if isinstance(body, dict):
+                for key in ["data", "content", "records", "results", "items"]:
+                    if key in body and isinstance(body[key], list):
+                        return body[key]
+                return [body]
+            return []
+
+        def discover_page_metadata(body):
+            #Discover pagination metadata from response#
+            page_size = None
+            total_pages = None
+            total_instances = None
+
+            if isinstance(body, dict):
+                page_size = body.get("pageSize")
+                total_pages = body.get("totalPages")
+                total_instances = body.get("totalInstances")
+
+                if "page" in body and isinstance(body["page"], dict):
+                    p = body["page"]
+                    page_size = page_size or p.get("pageSize")
+                    total_pages = total_pages or p.get("totalPages")
+                    total_instances = total_instances or p.get("totalInstances")
+
+            return page_size, total_pages, total_instances
+
+        def fetch_schema_data(session, base_url, headers, payload, page_size, max_pages, schema_name):
+            #Fetch all data from a single PI schema with pagination#
+            logger.info(f"[{schema_name}] Starting data fetch...")
             
+            separator = '&' if '?' in base_url else '?'
+            meta_url = f"{base_url}{separator}page=0&size={page_size}&showPageableMetaData=true"
+
+            # Metadata discovery
             try:
-                if fmt == 'csv' or fmt == 'tsv':
-                    df = pd.read_csv(path, encoding=encoding, sep=sep, low_memory=False)
-                elif fmt == 'parquet':
-                    df = pd.read_parquet(path)
-                elif fmt == 'excel':
-                    df = pd.read_excel(path)
-                elif fmt == 'json':
-                    # Try both orientations
-                    try:
-                        df = pd.read_json(path, lines=True)
-                    except:
-                        df = pd.read_json(path)
-                else:
-                    raise ValueError(f"Unsupported format: {fmt}")
-                
-                print(f"[LOAD] ✓ Loaded: {df.shape[0]} rows × {df.shape[1]} columns")
-                return df
-                
-            except Exception as e:
-                print(f"[LOAD] ✗ Error: {str(e)}", file=sys.stderr)
+                resp_meta = session.post(meta_url, headers=headers, json=payload, timeout=30)
+                resp_meta.raise_for_status()
+                body_meta = resp_meta.json()
+            except requests.exceptions.RequestException as e:
+                logger.error(f"[{schema_name}] Metadata request failed: {e}")
                 raise
-        
-        def validate_for_clustering(df, min_samples):
+
+            detected_page_size, total_pages, total_instances = discover_page_metadata(body_meta)
+            
+            logger.info(f"[{schema_name}] Detected: pageSize={detected_page_size}, totalPages={total_pages}, totalInstances={total_instances}")
+
+            # Determine page size
+            if detected_page_size:
+                actual_page_size = min(detected_page_size, page_size)
+            else:
+                inferred_records = extract_records(body_meta)
+                actual_page_size = len(inferred_records) if inferred_records else page_size
+
+            # Determine total pages
+            if total_pages is None and total_instances:
+                total_pages = (total_instances + actual_page_size - 1) // actual_page_size
+            
+            # Limit pages if max_pages specified
+            if max_pages > 0 and total_pages:
+                total_pages = min(total_pages, max_pages)
+                logger.info(f"[{schema_name}] Limited to {total_pages} pages (max_pages={max_pages})")
+
+            all_records = []
+
+            if total_pages is None:
+                # Single page API
+                logger.warning(f"[{schema_name}] No pagination metadata, assuming single page")
+                all_records.extend(extract_records(body_meta))
+            else:
+                # Paginated API
+                logger.info(f"[{schema_name}] Fetching {total_pages} pages...")
+                
+                for page in range(total_pages):
+                    page_url = f"{base_url}{separator}page={page}&size={actual_page_size}&showPageableMetaData=true"
+                    
+                    try:
+                        resp_page = session.post(page_url, headers=headers, json=payload, timeout=30)
+                        resp_page.raise_for_status()
+                        body_page = resp_page.json()
+                        
+                        records = extract_records(body_page)
+                        all_records.extend(records)
+                        
+                        if (page + 1) % 10 == 0 or page == total_pages - 1:
+                            logger.info(f"[{schema_name}] Progress: {page + 1}/{total_pages} pages, {len(all_records)} records")
+                        
+                    except requests.exceptions.RequestException as e:
+                        logger.error(f"[{schema_name}] Failed to fetch page {page}: {e}")
+                        raise
+
+            logger.info(f"[{schema_name}] ✓ Fetched {len(all_records)} total records")
+            return all_records
+
+        def select_features(df, feature_list):
+            #Select specific features from dataframe#
+            if not feature_list:
+                return df
+            
+            features = [f.strip() for f in feature_list if f.strip()]
+            if not features:
+                return df
+            
+            # Find available features
+            available = [f for f in features if f in df.columns]
+            missing = [f for f in features if f not in df.columns]
+            
+            if missing:
+                logger.warning(f"  Missing features: {missing}")
+            
+            if not available:
+                logger.error(f"  No requested features found in schema")
+                return df
+            
+            logger.info(f"  Selected {len(available)}/{len(features)} features")
+            return df[available]
+
+        def drop_metadata_cols(df):
+            #Drop PI metadata columns#
+            metadata_cols = [
+                "piMetadata", "execution_timestamp", "pipelineid", 
+                "component_id", "projectid", "created_at", "updated_at",
+                "_id", "id"  # Common ID fields
+            ]
+            
+            cols_to_drop = [c for c in metadata_cols if c in df.columns]
+            if cols_to_drop:
+                logger.info(f"  Dropping metadata columns: {cols_to_drop}")
+                df = df.drop(columns=cols_to_drop)
+            
+            return df
+
+        def validate_for_clustering(df):
+            #Validate data is ready for clustering#
             validation = {
                 'is_valid': True,
                 'errors': [],
@@ -87,7 +217,6 @@ implementation:
                 'checks_passed': []
             }
             
-            # Check 1: Empty dataset
             if df.empty:
                 validation['is_valid'] = False
                 validation['errors'].append("Dataset is empty")
@@ -95,226 +224,283 @@ implementation:
             
             validation['checks_passed'].append(f"Dataset has {len(df)} samples")
             
-            # Check 2: Minimum samples for clustering
-            if len(df) < min_samples:
+            if len(df) < 2:
                 validation['is_valid'] = False
-                validation['errors'].append(f"Need at least {min_samples} samples for clustering (got {len(df)})")
+                validation['errors'].append("Need at least 2 samples for clustering")
                 return validation
             
-            validation['checks_passed'].append(f"Minimum samples threshold met ({len(df)} >= {min_samples})")
-            
-            # Check 3: Duplicate columns
-            if df.columns.duplicated().any():
-                dup_cols = df.columns[df.columns.duplicated()].tolist()
-                validation['warnings'].append(f"Duplicate column names: {dup_cols}")
-            else:
-                validation['checks_passed'].append("No duplicate column names")
-            
-            # Check 4: Identify column types
+            # Check column types
             numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
             categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
             
             validation['numeric_columns'] = numeric_cols
             validation['categorical_columns'] = categorical_cols
-            validation['checks_passed'].append(f"Found {len(numeric_cols)} numeric columns")
-            validation['checks_passed'].append(f"Found {len(categorical_cols)} categorical columns")
+            validation['checks_passed'].append(f"Found {len(numeric_cols)} numeric, {len(categorical_cols)} categorical columns")
             
             if len(numeric_cols) == 0 and len(categorical_cols) == 0:
                 validation['is_valid'] = False
                 validation['errors'].append("No valid columns found")
                 return validation
             
-            # Check 5: Constant columns (problematic for clustering)
+            # Check for constant columns
             constant_cols = [col for col in df.columns if df[col].nunique(dropna=True) <= 1]
             if constant_cols:
-                validation['warnings'].append(f"Constant columns detected (will be removed): {constant_cols}")
-            else:
-                validation['checks_passed'].append("No constant columns")
+                validation['warnings'].append(f"Constant columns (will be removed): {constant_cols}")
             
-            # Check 6: Missing values
+            # Check for missing values
             missing_total = df.isnull().sum().sum()
-            missing_pct = (missing_total / (df.shape[0] * df.shape[1])) * 100 if df.size > 0 else 0
-            
             if missing_total > 0:
+                missing_pct = (missing_total / (df.shape[0] * df.shape[1])) * 100
                 validation['warnings'].append(f"Missing values: {missing_total} ({missing_pct:.2f}%)")
-                missing_by_col = {}
-                for col in df.columns:
-                    miss_count = df[col].isnull().sum()
-                    if miss_count > 0:
-                        missing_by_col[col] = {
-                            'count': int(miss_count),
-                            'percentage': float(miss_count / len(df) * 100)
-                        }
-                validation['missing_by_column'] = missing_by_col
-            else:
-                validation['checks_passed'].append("No missing values")
-            
-            # Check 7: Infinite values in numeric columns
-            inf_count = 0
-            for col in numeric_cols:
-                col_inf = df[col].isin([np.inf, -np.inf]).sum()
-                inf_count += col_inf
-            
-            if inf_count > 0:
-                validation['warnings'].append(f"Infinite values: {inf_count}")
-            else:
-                validation['checks_passed'].append("No infinite values")
-            
-            # Check 8: All-NaN columns
-            all_nan_cols = [col for col in df.columns if df[col].isna().all()]
-            if all_nan_cols:
-                validation['warnings'].append(f"All-NaN columns (will be removed): {all_nan_cols}")
             
             return validation
-        
-        def handle_duplicates(df, strategy):
-            before = len(df)
-            
-            if strategy == 'remove':
-                df = df.drop_duplicates(keep='first')
-            elif strategy == 'keep_first':
-                df = df.drop_duplicates(keep='first')
-            elif strategy == 'keep_last':
-                df = df.drop_duplicates(keep='last')
-            elif strategy == 'keep_all':
-                pass  # Do nothing
-            else:
-                raise ValueError(f"Invalid duplicate strategy: {strategy}")
-            
-            after = len(df)
-            removed = before - after
-            
-            return df.reset_index(drop=True), removed
-        
-        def collect_statistics(df):
-            stats = {
-                'shape': {'rows': int(df.shape[0]), 'cols': int(df.shape[1])},
-                'columns': list(df.columns),
-                'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
-                'memory_mb': float(df.memory_usage(deep=True).sum() / 1024**2)
-            }
-            
-            # Numeric statistics
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            if numeric_cols:
-                stats['numeric_stats'] = {}
-                for col in numeric_cols:
-                    try:
-                        stats['numeric_stats'][col] = {
-                            'count': int(df[col].count()),
-                            'mean': float(df[col].mean()),
-                            'std': float(df[col].std()),
-                            'min': float(df[col].min()),
-                            'q25': float(df[col].quantile(0.25)),
-                            'median': float(df[col].median()),
-                            'q75': float(df[col].quantile(0.75)),
-                            'max': float(df[col].max()),
-                            'unique': int(df[col].nunique())
-                        }
-                    except:
-                        pass
-            
-            # Categorical statistics
-            categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-            if categorical_cols:
-                stats['categorical_stats'] = {}
-                for col in categorical_cols[:10]:  # Limit to first 10
-                    try:
-                        stats['categorical_stats'][col] = {
-                            'unique': int(df[col].nunique()),
-                            'top_values': df[col].value_counts().head(5).to_dict()
-                        }
-                    except:
-                        pass
-            
-            return stats
-        
-        # Main execution
+
+        # Parse arguments
         parser = argparse.ArgumentParser()
-        parser.add_argument('--input_path', type=str, required=True)
-        parser.add_argument('--file_format', type=str, default='auto')
-        parser.add_argument('--encoding', type=str, default='utf-8')
-        parser.add_argument('--csv_separator', type=str, default=',')
-        parser.add_argument('--handle_duplicates', type=str, default='remove')
-        parser.add_argument('--min_samples_threshold', type=int, default=2)
+        parser.add_argument('--api_url', type=str, required=True)
+        parser.add_argument('--access_token', type=str, required=True)
+        parser.add_argument('--schema_configs', type=str, default='[]')
+        parser.add_argument('--entity_id', type=str, default='')
+        parser.add_argument('--feature_list', type=str, default='')
+        parser.add_argument('--db_type', type=str, default='TIDB')
+        parser.add_argument('--owned_only', type=str, default='false')
+        parser.add_argument('--start_time', type=int, default=0)
+        parser.add_argument('--end_time', type=int, default=0)
+        parser.add_argument('--custom_filter', type=str, default='{}')
+        parser.add_argument('--page_size', type=int, default=2000)
+        parser.add_argument('--max_pages', type=int, default=0)
+        parser.add_argument('--merge_strategy', type=str, default='outer')
+        parser.add_argument('--merge_key', type=str, default='')
+        parser.add_argument('--drop_metadata_columns', type=str, default='true')
         parser.add_argument('--validate_clustering_readiness', type=str, default='true')
         parser.add_argument('--loaded_data', type=str, required=True)
         parser.add_argument('--load_metadata', type=str, required=True)
         args = parser.parse_args()
-        
+
         try:
             print("=" * 80)
-            print("CLUSTERING PREPROCESSING - COMPONENT 1: DATA LOADING")
+            print("CLUSTERING PREPROCESSING - PI SCHEMA DATA LOADER")
             print("=" * 80)
             
-            # Auto-detect format
-            if args.file_format == 'auto':
-                file_format = auto_detect_format(args.input_path)
+            # Read access token
+            with open(args.access_token, 'r') as f:
+                access_token = f.read().strip()
+
+            # Setup HTTP session
+            session = requests.Session()
+            retries = Retry(
+                total=5,
+                backoff_factor=1,
+                status_forcelist=[500, 502, 503, 504],
+                allowed_methods=["POST"]
+            )
+            adapter = HTTPAdapter(max_retries=retries)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}"
+            }
+
+            # Parse schema configurations
+            schema_configs_list = []
+            
+            # Try multi-schema config first
+            if args.schema_configs and args.schema_configs != '[]':
+                try:
+                    schema_configs_list = json.loads(args.schema_configs)
+                    logger.info(f"[CONFIG] Loaded {len(schema_configs_list)} schema configurations")
+                except json.JSONDecodeError as e:
+                    logger.error(f"[CONFIG] Invalid schema_configs JSON: {e}")
+                    raise
+            
+            # Fallback to single schema config
+            elif args.entity_id:
+                schema_configs_list = [{
+                    'entityId': args.entity_id,
+                    'features': args.feature_list.split(',') if args.feature_list else []
+                }]
+                logger.info(f"[CONFIG] Using single schema: {args.entity_id}")
+            
             else:
-                file_format = args.file_format
+                raise ValueError("Must provide either 'schema_configs' or 'entity_id'")
+
+            # Parse custom filter
+            try:
+                custom_filter = json.loads(args.custom_filter)
+            except json.JSONDecodeError:
+                logger.warning(f"[CONFIG] Invalid custom_filter JSON, using empty filter")
+                custom_filter = {}
+
+            # Fetch data from each schema
+            print(f"\n[FETCH] Loading data from {len(schema_configs_list)} schema(s)...")
             
-            # Load data
-            df = load_data(args.input_path, file_format, args.encoding, args.csv_separator)
+            schema_dataframes = []
+            schema_metadata = []
             
-            # Handle duplicates
-            dup_strategy = args.handle_duplicates.lower()
-            df, removed_dups = handle_duplicates(df, dup_strategy)
-            if removed_dups > 0:
-                print(f"[CLEAN] Removed {removed_dups} duplicate rows")
-            
-            # Validate for clustering
-            validate = args.validate_clustering_readiness.lower() in ('true', '1', 'yes', 't')
-            if validate:
-                validation = validate_for_clustering(df, args.min_samples_threshold)
+            for idx, schema_config in enumerate(schema_configs_list, 1):
+                entity_id = schema_config.get('entityId', '')
+                features = schema_config.get('features', [])
+                entity_ids = schema_config.get('entityIds', [])
+                schema_filter = schema_config.get('filter', {})
                 
-                print(f"\n[VALIDATE] Clustering Readiness Check:")
+                schema_name = f"Schema_{idx}_{entity_id or 'multi'}"
+                
+                # Build payload
+                payload = {
+                    "dbType": args.db_type,
+                    "entityId": entity_id,
+                    "entityIds": entity_ids if entity_ids else [],
+                    "ownedOnly": args.owned_only.lower() in ('true', '1', 'yes'),
+                    "projections": features if features else [],
+                    "filter": {**custom_filter, **schema_filter},
+                    "startTime": args.start_time,
+                    "endTime": args.end_time
+                }
+                
+                logger.info(f"\n[{schema_name}] Configuration:")
+                logger.info(f"  Entity ID: {entity_id or 'multiple'}")
+                if features:
+                    logger.info(f"  Features: {features[:5]}{'...' if len(features) > 5 else ''}")
+                
+                # Fetch data
+                records = fetch_schema_data(
+                    session=session,
+                    base_url=args.api_url,
+                    headers=headers,
+                    payload=payload,
+                    page_size=args.page_size,
+                    max_pages=args.max_pages,
+                    schema_name=schema_name
+                )
+                
+                if not records:
+                    logger.warning(f"[{schema_name}] No records retrieved")
+                    continue
+                
+                # Convert to DataFrame
+                df = pd.DataFrame(records)
+                logger.info(f"[{schema_name}] Created DataFrame: {df.shape}")
+                
+                # Select features if specified
+                if features:
+                    df = select_features(df, features)
+                    logger.info(f"[{schema_name}] After feature selection: {df.shape}")
+                
+                schema_dataframes.append(df)
+                schema_metadata.append({
+                    'schema_name': schema_name,
+                    'entity_id': entity_id,
+                    'records_fetched': len(records),
+                    'shape': {'rows': df.shape[0], 'cols': df.shape[1]},
+                    'features_requested': features,
+                    'features_found': list(df.columns)
+                })
+
+            if not schema_dataframes:
+                raise ValueError("No data retrieved from any schema")
+
+            # Merge dataframes if multiple schemas
+            print(f"\n[MERGE] Combining {len(schema_dataframes)} schema(s)...")
+            
+            if len(schema_dataframes) == 1:
+                df_merged = schema_dataframes[0]
+                logger.info(f"  Single schema, no merging needed")
+            else:
+                merge_strategy = args.merge_strategy.lower()
+                merge_key = args.merge_key.strip()
+                
+                if merge_key and merge_key in schema_dataframes[0].columns:
+                    logger.info(f"  Merging on key: '{merge_key}' (strategy: {merge_strategy})")
+                    df_merged = schema_dataframes[0]
+                    
+                    for idx, df_next in enumerate(schema_dataframes[1:], 1):
+                        if merge_key not in df_next.columns:
+                            logger.warning(f"  Schema {idx+1} missing merge key '{merge_key}', skipping")
+                            continue
+                        
+                        df_merged = pd.merge(
+                            df_merged, df_next,
+                            on=merge_key,
+                            how=merge_strategy,
+                            suffixes=('', f'_schema{idx+1}')
+                        )
+                        logger.info(f"  After merging schema {idx+1}: {df_merged.shape}")
+                else:
+                    logger.info(f"  Concatenating schemas (no merge key specified)")
+                    df_merged = pd.concat(schema_dataframes, axis=0, ignore_index=True)
+                    logger.info(f"  After concatenation: {df_merged.shape}")
+
+            # Drop metadata columns if requested
+            if args.drop_metadata_columns.lower() in ('true', '1', 'yes'):
+                print(f"\n[CLEAN] Dropping metadata columns...")
+                df_merged = drop_metadata_cols(df_merged)
+                logger.info(f"  Final shape: {df_merged.shape}")
+
+            # Validate for clustering
+            if args.validate_clustering_readiness.lower() in ('true', '1', 'yes'):
+                print(f"\n[VALIDATE] Checking clustering readiness...")
+                validation = validate_for_clustering(df_merged)
+                
                 for check in validation['checks_passed']:
-                    print(f"  ✓ {check}")
+                    logger.info(f"  ✓ {check}")
                 for warning in validation['warnings']:
-                    print(f"  ⚠ {warning}")
+                    logger.warning(f"  ⚠ {warning}")
                 for error in validation['errors']:
-                    print(f"  ✗ {error}")
+                    logger.error(f"  ✗ {error}")
                 
                 if not validation['is_valid']:
-                    print("\n[VALIDATE] ✗ Validation FAILED")
-                    sys.exit(1)
+                    raise ValueError("Data validation failed for clustering")
                 
-                print("\n[VALIDATE] ✓ Data is ready for clustering preprocessing")
+                logger.info(f"  ✓ Data is ready for clustering")
             else:
-                validation = {'is_valid': True, 'errors': [], 'warnings': [], 'checks_passed': ['Validation skipped']}
-            
-            # Collect statistics
-            statistics = collect_statistics(df)
-            
+                validation = {'is_valid': True, 'checks_passed': ['Validation skipped']}
+
             # Save outputs
             print(f"\n[SAVE] Saving outputs...")
             ensure_dir(args.loaded_data)
             ensure_dir(args.load_metadata)
             
-            df.to_parquet(args.loaded_data, index=False)
-            print(f"  ✓ Data: {args.loaded_data}")
+            df_merged.to_parquet(args.loaded_data, index=False)
+            logger.info(f"  ✓ Data: {args.loaded_data}")
             
+            # Prepare metadata
             metadata = {
                 'timestamp': datetime.utcnow().isoformat() + 'Z',
-                'component': 'data_loader',
-                'input_path': args.input_path,
-                'file_format': file_format,
-                'encoding': args.encoding,
-                'duplicates_removed': removed_dups,
+                'component': 'pi_schema_data_loader',
+                'api_url': args.api_url,
+                'schemas_loaded': len(schema_dataframes),
+                'schema_details': schema_metadata,
+                'merge_strategy': args.merge_strategy if len(schema_dataframes) > 1 else 'none',
+                'merge_key': args.merge_key if len(schema_dataframes) > 1 else None,
+                'final_shape': {
+                    'rows': int(df_merged.shape[0]),
+                    'cols': int(df_merged.shape[1])
+                },
+                'columns': list(df_merged.columns),
+                'dtypes': {col: str(dtype) for col, dtype in df_merged.dtypes.items()},
                 'validation': validation,
-                'statistics': statistics
+                'statistics': {
+                    'numeric_columns': validation.get('numeric_columns', []),
+                    'categorical_columns': validation.get('categorical_columns', []),
+                    'memory_mb': float(df_merged.memory_usage(deep=True).sum() / 1024**2)
+                }
             }
             
             with open(args.load_metadata, 'w') as f:
                 json.dump(metadata, f, indent=2)
-            print(f"  ✓ Metadata: {args.load_metadata}")
+            logger.info(f"  ✓ Metadata: {args.load_metadata}")
             
+            # Final summary
             print("\n" + "=" * 80)
-            print("COMPONENT 1 COMPLETE")
+            print("PI SCHEMA DATA LOADER COMPLETE")
             print("=" * 80)
-            print(f"Final shape: {df.shape[0]} rows × {df.shape[1]} columns")
+            print(f"Schemas loaded: {len(schema_dataframes)}")
+            print(f"Final dataset: {df_merged.shape[0]} rows × {df_merged.shape[1]} columns")
             print(f"Numeric columns: {len(validation.get('numeric_columns', []))}")
             print(f"Categorical columns: {len(validation.get('categorical_columns', []))}")
+            print(f"Memory usage: {metadata['statistics']['memory_mb']:.2f} MB")
             print("=" * 80 + "\n")
             
         except Exception as e:
@@ -322,20 +508,38 @@ implementation:
             import traceback
             traceback.print_exc()
             sys.exit(1)
-    
+
     args:
-      - --input_path
-      - {inputValue: input_path}
-      - --file_format
-      - {inputValue: file_format}
-      - --encoding
-      - {inputValue: encoding}
-      - --csv_separator
-      - {inputValue: csv_separator}
-      - --handle_duplicates
-      - {inputValue: handle_duplicates}
-      - --min_samples_threshold
-      - {inputValue: min_samples_threshold}
+      - --api_url
+      - {inputValue: api_url}
+      - --access_token
+      - {inputPath: access_token}
+      - --schema_configs
+      - {inputValue: schema_configs}
+      - --entity_id
+      - {inputValue: entity_id}
+      - --feature_list
+      - {inputValue: feature_list}
+      - --db_type
+      - {inputValue: db_type}
+      - --owned_only
+      - {inputValue: owned_only}
+      - --start_time
+      - {inputValue: start_time}
+      - --end_time
+      - {inputValue: end_time}
+      - --custom_filter
+      - {inputValue: custom_filter}
+      - --page_size
+      - {inputValue: page_size}
+      - --max_pages
+      - {inputValue: max_pages}
+      - --merge_strategy
+      - {inputValue: merge_strategy}
+      - --merge_key
+      - {inputValue: merge_key}
+      - --drop_metadata_columns
+      - {inputValue: drop_metadata_columns}
       - --validate_clustering_readiness
       - {inputValue: validate_clustering_readiness}
       - --loaded_data
