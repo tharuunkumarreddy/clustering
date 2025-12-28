@@ -26,11 +26,9 @@ implementation:
   container:
     image: nikhilv215/nesy-factory:v22
     command:
-    - sh
-    - -ec
-    - |
-      python3 -u - "$@" << 'EOF'
-      import argparse
+    - python3
+    - -u
+    - -c
       import os
       import sys
       import json
@@ -353,8 +351,6 @@ implementation:
           import traceback
           traceback.print_exc()
           sys.exit(1)
-      EOF
-    args:
     - --dataset_source
     - {inputValue: dataset_source}
     - --hf_dataset_name
