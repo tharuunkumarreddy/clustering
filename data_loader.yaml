@@ -5,13 +5,13 @@ inputs:
 - {name: api_base_url, type: String, description: 'PI API base URL'}
 - {name: access_token, type: String, description: 'Bearer access token'}
 - {name: schema_id, type: String, description: 'PI Schema ID'}
-- {name: feature_list, type: String, default: 'none', description: 'Comma-separated features or none for all'}
+- {name: feature_list, type: String, default: 'none', description: 'Comma-separated features (none = all)'}
 - {name: show_referenced_data, type: String, default: 'false', description: 'Include referenced data'}
 - {name: show_dbaas_keywords, type: String, default: 'false', description: 'Show DBaaS keywords'}
 - {name: show_pageable_metadata, type: String, default: 'true', description: 'Include pagination metadata'}
-- {name: page_size, type: Integer, default: 50, description: 'Page size (use 50 or 100)'}
-- {name: max_pages, type: Integer, default: 100, description: 'Max pages (use large number for all)'}
-- {name: start_page, type: Integer, default: 1, description: 'Starting page (use 1 for first page)'}
+- {name: page_size, type: String, default: '20', description: 'Page size'}
+- {name: max_pages, type: String, default: '-1', description: 'Max pages (-1 = all)'}
+- {name: start_page, type: String, default: '0', description: 'Starting page (default 0)'}
 - {name: drop_metadata_columns, type: String, default: 'true', description: 'Drop metadata columns'}
 
 outputs:
@@ -26,7 +26,7 @@ implementation:
     - -c
     - |
       set -e
-      python3 -u << 'PYSCRIPT'
+      python3 -u -c '
       import argparse
       import os
       import sys
@@ -96,13 +96,9 @@ implementation:
           return url + "?" + "&".join(params)
       
       def fetch_data(session, base_url, schema_id, headers, page_size, max_pages, show_ref, show_dbaas, show_page_meta, start_page):
-          # Adjust start_page: if user sets 1, we use 0 (API is 0-indexed)
-          api_start_page = max(0, start_page - 1)
-          
           logger.info("Loading from PI schema: " + schema_id)
-          logger.info("User start_page: " + str(start_page) + " -> API page: " + str(api_start_page))
           
-          meta_url = build_api_url(base_url, schema_id, api_start_page, page_size, show_ref, show_dbaas, show_page_meta)
+          meta_url = build_api_url(base_url, schema_id, start_page, page_size, show_ref, show_dbaas, show_page_meta)
           logger.info("API URL: " + meta_url)
           
           try:
@@ -126,26 +122,19 @@ implementation:
               total_pages = (total_instances + actual_page_size - 1) // actual_page_size
               logger.info("Calculated pages: " + str(total_pages))
           
-          # If max_pages is very large (like 100), fetch all pages
-          if total_pages and max_pages >= total_pages:
-              logger.info("Fetching all " + str(total_pages) + " pages")
-              pages_to_fetch = total_pages
-          elif max_pages > 0:
-              pages_to_fetch = min(total_pages or max_pages, max_pages)
-              logger.info("Limited to: " + str(pages_to_fetch) + " pages")
-          else:
-              pages_to_fetch = total_pages or 1
+          if max_pages > 0 and total_pages:
+              total_pages = min(total_pages, max_pages)
+              logger.info("Limited to: " + str(total_pages) + " pages")
           
           all_records = []
           
-          if not total_pages:
-              logger.warning("No pagination metadata - single page")
+          if total_pages is None:
+              logger.warning("No pagination - single page")
               all_records.extend(extract_records(body_meta))
           else:
-              logger.info("Fetching " + str(pages_to_fetch) + " pages...")
+              logger.info("Fetching " + str(total_pages) + " pages...")
               
-              for i in range(pages_to_fetch):
-                  page = api_start_page + i
+              for page in range(start_page, start_page + total_pages):
                   page_url = build_api_url(base_url, schema_id, page, actual_page_size, show_ref, show_dbaas, show_page_meta)
                   
                   try:
@@ -156,8 +145,8 @@ implementation:
                       records = extract_records(body_page)
                       all_records.extend(records)
                       
-                      if (i + 1) % 10 == 0 or i == pages_to_fetch - 1:
-                          logger.info("Progress: " + str(i + 1) + "/" + str(pages_to_fetch) + " pages, " + str(len(all_records)) + " records")
+                      if (page - start_page + 1) % 10 == 0 or page == start_page + total_pages - 1:
+                          logger.info("Progress: " + str(page - start_page + 1) + "/" + str(total_pages) + " pages, " + str(len(all_records)) + " records")
                   except requests.exceptions.RequestException as e:
                       logger.error("Failed page " + str(page) + ": " + str(e))
                       raise
@@ -167,11 +156,7 @@ implementation:
       
       def select_features(df, feature_list):
           if not feature_list or feature_list == "none":
-              logger.info("Using all features (no selection)")
               return df
-          
-          # Remove any extra quotes
-          feature_list = feature_list.strip('"').strip("'")
           
           features = [f.strip() for f in feature_list.split(",") if f.strip()]
           if not features:
@@ -181,13 +166,13 @@ implementation:
           missing = [f for f in features if f not in df.columns]
           
           if missing:
-              logger.warning("Missing features: " + str(missing))
+              logger.warning("Missing: " + str(missing))
           
           if not available:
-              logger.error("No requested features found")
+              logger.error("No features found")
               return df
           
-          logger.info("Selected " + str(len(available)) + "/" + str(len(features)) + " features")
+          logger.info("Selected " + str(len(available)) + "/" + str(len(features)))
           return df[available]
       
       def drop_metadata_cols(df):
@@ -206,9 +191,9 @@ implementation:
       parser.add_argument("--show_referenced_data", type=str, default="false")
       parser.add_argument("--show_dbaas_keywords", type=str, default="false")
       parser.add_argument("--show_pageable_metadata", type=str, default="true")
-      parser.add_argument("--page_size", type=int, default=50)
-      parser.add_argument("--max_pages", type=int, default=100)
-      parser.add_argument("--start_page", type=int, default=1)
+      parser.add_argument("--page_size", type=str, default="20")
+      parser.add_argument("--max_pages", type=str, default="-1")
+      parser.add_argument("--start_page", type=str, default="0")
       parser.add_argument("--drop_metadata_columns", type=str, default="true")
       parser.add_argument("--loaded_data", type=str, required=True)
       parser.add_argument("--load_metadata", type=str, required=True)
@@ -218,6 +203,10 @@ implementation:
           print("=" * 80)
           print("PI SCHEMA DATA LOADER v2")
           print("=" * 80)
+          
+          page_size = int(args.page_size)
+          max_pages = int(args.max_pages)
+          start_page = int(args.start_page)
           
           with open(args.access_token, "r") as f:
               access_token = f.read().strip()
@@ -232,9 +221,9 @@ implementation:
           
           print("\n[CONFIG] Schema: " + args.schema_id)
           print("[CONFIG] Base URL: " + args.api_base_url)
-          print("[CONFIG] Page size: " + str(args.page_size))
-          print("[CONFIG] Max pages: " + str(args.max_pages))
-          print("[CONFIG] Start page: " + str(args.start_page))
+          print("[CONFIG] Page size: " + str(page_size))
+          print("[CONFIG] Max pages: " + str(max_pages))
+          print("[CONFIG] Start page: " + str(start_page))
           
           print("\n[FETCH] Loading data...")
           
@@ -243,12 +232,12 @@ implementation:
               base_url=args.api_base_url,
               schema_id=args.schema_id,
               headers=headers,
-              page_size=args.page_size,
-              max_pages=args.max_pages,
+              page_size=page_size,
+              max_pages=max_pages,
               show_ref=args.show_referenced_data,
               show_dbaas=args.show_dbaas_keywords,
               show_page_meta=args.show_pageable_metadata,
-              start_page=args.start_page
+              start_page=start_page
           )
           
           if not records:
@@ -308,7 +297,7 @@ implementation:
           import traceback
           traceback.print_exc()
           sys.exit(1)
-      PYSCRIPT
+      ' -- "$@"
     args:
     - --api_base_url
     - {inputValue: api_base_url}
