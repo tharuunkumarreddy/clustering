@@ -27,10 +27,9 @@ implementation:
     image: nikhilv215/nesy-factory:v22
     command:
     - sh
-    - -c
+    - -ec
     - |
-      set -e
-      python3 -u -c '
+      python3 -u - "$@" << 'EOF'
       import argparse
       import os
       import sys
@@ -354,7 +353,7 @@ implementation:
           import traceback
           traceback.print_exc()
           sys.exit(1)
-      ' "$@"
+      EOF
     args:
     - --dataset_source
     - {inputValue: dataset_source}
