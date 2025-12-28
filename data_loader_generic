@@ -2,25 +2,25 @@ name: Generic Dataset Loader for Clustering
 description: Load datasets for clustering from either Hugging Face or PI API. Supports both flat and nested PI schema structures. No train-test split (clustering is unsupervised learning).
 
 inputs:
-- {name: dataset_source, type: String, description: 'Data source: huggingface or pi_api'}
-- {name: hf_dataset_name, type: String, default: '', description: 'HF dataset name'}
-- {name: hf_token, type: String, default: '', description: 'HF token for private datasets'}
-- {name: api_base_url, type: String, default: '', description: 'PI API base URL'}
-- {name: access_token, type: String, default: '', description: 'Bearer token for PI API'}
-- {name: schema_id, type: String, default: '', description: 'PI Schema ID'}
-- {name: feature_list, type: String, default: '', description: 'Comma-separated features to select'}
-- {name: show_referenced_data, type: String, default: 'false', description: 'Include referenced data'}
-- {name: show_dbaas_keywords, type: String, default: 'false', description: 'Show DBaaS keywords'}
-- {name: show_pageable_metadata, type: String, default: 'true', description: 'Include pagination metadata'}
-- {name: page_size, type: String, default: '20', description: 'Page size for PI API'}
-- {name: max_pages, type: String, default: '-1', description: 'Max pages (-1 = all)'}
-- {name: start_page, type: String, default: '0', description: 'Starting page number'}
-- {name: max_records, type: String, default: '-1', description: 'Limit records (-1 = all)'}
-- {name: drop_metadata_columns, type: String, default: 'true', description: 'Drop PI metadata columns'}
+- {name: dataset_source, type: string, description: 'Data source: huggingface or pi_api'}
+- {name: hf_dataset_name, type: string, default: '', description: 'HF dataset name'}
+- {name: hf_token, type: string, default: '', description: 'HF token for private datasets'}
+- {name: api_base_url, type: string, default: '', description: 'PI API base URL'}
+- {name: access_token, type: string, default: '', description: 'Bearer token for PI API'}
+- {name: schema_id, type: string, default: '', description: 'PI Schema ID'}
+- {name: feature_list, type: string, default: '', description: 'Comma-separated features to select'}
+- {name: show_referenced_data, type: string, default: 'false', description: 'Include referenced data'}
+- {name: show_dbaas_keywords, type: string, default: 'false', description: 'Show DBaaS keywords'}
+- {name: show_pageable_metadata, type: string, default: 'true', description: 'Include pagination metadata'}
+- {name: page_size, type: string, default: '20', description: 'Page size for PI API'}
+- {name: max_pages, type: string, default: '-1', description: 'Max pages (-1 = all)'}
+- {name: start_page, type: string, default: '0', description: 'Starting page number'}
+- {name: max_records, type: string, default: '-1', description: 'Limit records (-1 = all)'}
+- {name: drop_metadata_columns, type: string, default: 'true', description: 'Drop PI metadata columns'}
 
 outputs:
 - {name: loaded_data, type: Dataset, description: 'Loaded dataset'}
-- {name: load_metadata, type: String, description: 'Loading metadata'}
+- {name: load_metadata, type: string, description: 'Loading metadata'}
 
 implementation:
   container:
