@@ -5,7 +5,7 @@ inputs:
 - {name: api_base_url, type: String, description: 'PI API base URL'}
 - {name: access_token, type: String, description: 'Bearer access token'}
 - {name: schema_id, type: String, description: 'PI Schema ID'}
-- {name: feature_list, type: String, default: '', description: 'Comma-separated features'}
+- {name: feature_list, type: String, default: 'none', description: 'Comma-separated features (none = all)'}
 - {name: show_referenced_data, type: String, default: 'false', description: 'Include referenced data'}
 - {name: show_dbaas_keywords, type: String, default: 'false', description: 'Show DBaaS keywords'}
 - {name: show_pageable_metadata, type: String, default: 'true', description: 'Include pagination metadata'}
@@ -155,7 +155,7 @@ implementation:
           return all_records
       
       def select_features(df, feature_list):
-          if not feature_list:
+          if not feature_list or feature_list == "none":
               return df
           
           features = [f.strip() for f in feature_list.split(",") if f.strip()]
@@ -187,7 +187,7 @@ implementation:
       parser.add_argument("--api_base_url", type=str, required=True)
       parser.add_argument("--access_token", type=str, required=True)
       parser.add_argument("--schema_id", type=str, required=True)
-      parser.add_argument("--feature_list", type=str, default="")
+      parser.add_argument("--feature_list", type=str, default="none")
       parser.add_argument("--show_referenced_data", type=str, default="false")
       parser.add_argument("--show_dbaas_keywords", type=str, default="false")
       parser.add_argument("--show_pageable_metadata", type=str, default="true")
@@ -246,7 +246,7 @@ implementation:
           df = pd.DataFrame(records)
           logger.info("DataFrame: " + str(df.shape))
           
-          if args.feature_list:
+          if args.feature_list and args.feature_list != "none":
               df = select_features(df, args.feature_list)
               logger.info("After selection: " + str(df.shape))
           
@@ -297,7 +297,7 @@ implementation:
           import traceback
           traceback.print_exc()
           sys.exit(1)
-      ' "$@"
+      ' -- "$@"
     args:
     - --api_base_url
     - {inputValue: api_base_url}
