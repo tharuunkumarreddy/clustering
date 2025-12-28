@@ -1,0 +1,429 @@
+name: Generic Dataset Loader for Clustering
+description: |
+  Load datasets for clustering from either Hugging Face or PI API.
+  Supports both flat and nested PI schema structures.
+  No train-test split (clustering is unsupervised learning).
+
+inputs:
+  # Data source selection
+  - {name: dataset_source, type: String, description: 'Data source: huggingface or pi_api'}
+  
+  # Hugging Face parameters
+  - {name: hf_dataset_name, type: String, default: "", description: 'HF dataset name (e.g., scikit-learn/iris)'}
+  - {name: hf_token, type: String, default: "", description: 'HF token for private datasets'}
+  
+  # PI API parameters
+  - {name: api_base_url, type: String, default: "", description: 'PI API base URL'}
+  - {name: access_token, type: String, default: "", description: 'Bearer token for PI API'}
+  - {name: schema_id, type: String, default: "", description: 'PI Schema ID'}
+  - {name: feature_list, type: String, default: "", description: 'Comma-separated features to select'}
+  - {name: show_referenced_data, type: String, default: "false", description: 'Include referenced data'}
+  - {name: show_dbaas_keywords, type: String, default: "false", description: 'Show DBaaS keywords'}
+  - {name: show_pageable_metadata, type: String, default: "true", description: 'Include pagination metadata'}
+  - {name: page_size, type: Integer, default: 20, description: 'Page size for PI API'}
+  - {name: max_pages, type: Integer, default: -1, description: 'Max pages (-1 = all)'}
+  - {name: start_page, type: Integer, default: 0, description: 'Starting page number'}
+  
+  # Common parameters
+  - {name: max_records, type: Integer, default: -1, description: 'Limit records (-1 = all)'}
+  - {name: drop_metadata_columns, type: String, default: "true", description: 'Drop PI metadata columns'}
+
+outputs:
+  - {name: loaded_data, type: Dataset, description: 'Loaded dataset'}
+  - {name: load_metadata, type: String, description: 'Loading metadata'}
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+    - sh
+    - -ec
+    - |
+      program_path=$(mktemp)
+      printf "%s" "$0" > "$program_path"
+      python3 -u "$program_path" "$@"
+    - |
+      import argparse
+      import os
+      import sys
+      import json
+      import pandas as pd
+      import numpy as np
+      import requests
+      from requests.adapters import HTTPAdapter
+      from urllib3.util.retry import Retry
+      import logging
+      from datetime import datetime
+      
+      logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+      logger = logging.getLogger('dataset_loader')
+      
+      def ensure_dir(path):
+          d = os.path.dirname(path)
+          if d and not os.path.exists(d):
+              os.makedirs(d, exist_ok=True)
+      
+      def get_token_value(token_arg):
+          if not token_arg:
+              return None
+          token_str = str(token_arg).strip()
+          if os.path.exists(token_str):
+              try:
+                  with open(token_str, 'r') as f:
+                      content = f.read().strip()
+                      return content if content else None
+              except Exception as e:
+                  logger.error("Failed to read token file: {}".format(e))
+                  return None
+          return token_str if token_str and token_str != "None" else None
+      
+      def extract_records(body):
+          if isinstance(body, list):
+              return body
+          if isinstance(body, dict):
+              for key in ["data", "content", "records", "results", "items", "instances"]:
+                  if key in body and isinstance(body[key], list):
+                      return body[key]
+              if any(k for k in body.keys() if not k.startswith('page') and not k.startswith('total')):
+                  return [body]
+          return []
+      
+      def discover_page_metadata(body):
+          page_size = None
+          total_pages = None
+          total_instances = None
+          
+          if isinstance(body, dict):
+              page_size = body.get("pageSize") or body.get("size")
+              total_pages = body.get("totalPages")
+              total_instances = body.get("totalInstances") or body.get("totalElements")
+              
+              if "page" in body and isinstance(body["page"], dict):
+                  p = body["page"]
+                  page_size = page_size or p.get("pageSize") or p.get("size")
+                  total_pages = total_pages or p.get("totalPages")
+                  total_instances = total_instances or p.get("totalElements")
+              
+              if "pageable" in body and isinstance(body["pageable"], dict):
+                  pg = body["pageable"]
+                  page_size = page_size or pg.get("pageSize")
+              
+              if total_instances and page_size and not total_pages:
+                  total_pages = (total_instances + page_size - 1) // page_size
+          
+          return page_size, total_pages, total_instances
+      
+      def build_api_url(base_url, schema_id, page, size, show_ref, show_dbaas, show_page_meta):
+          base_url = base_url.rstrip('/')
+          url = "{}/schemas/{}/instances/list".format(base_url, schema_id)
+          params = [
+              "showReferencedData={}".format(show_ref),
+              "showDBaaSReservedKeywords={}".format(show_dbaas),
+              "showPageableMetaData={}".format(show_page_meta),
+              "size={}".format(size),
+              "page={}".format(page)
+          ]
+          return "{}?{}".format(url, '&'.join(params))
+      
+      def load_from_pi_api(base_url, schema_id, access_token, page_size, max_pages, 
+                          show_ref, show_dbaas, show_page_meta, start_page):
+          
+          logger.info("Loading data from PI schema: {}".format(schema_id))
+          
+          session = requests.Session()
+          retries = Retry(
+              total=5,
+              backoff_factor=1,
+              status_forcelist=[500, 502, 503, 504],
+              allowed_methods=["POST"]
+          )
+          adapter = HTTPAdapter(max_retries=retries)
+          session.mount("http://", adapter)
+          session.mount("https://", adapter)
+          
+          headers = {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer {}".format(access_token)
+          }
+          
+          meta_url = build_api_url(base_url, schema_id, start_page, page_size,
+                                  show_ref, show_dbaas, show_page_meta)
+          
+          logger.info("API URL: {}".format(meta_url))
+          
+          try:
+              resp_meta = session.post(meta_url, headers=headers, json={}, timeout=30)
+              resp_meta.raise_for_status()
+              body_meta = resp_meta.json()
+              logger.info("Response status: {}".format(resp_meta.status_code))
+          except requests.exceptions.RequestException as e:
+              logger.error("API request failed: {}".format(str(e)))
+              if hasattr(e, 'response') and e.response is not None:
+                  logger.error("Status: {}".format(e.response.status_code))
+                  logger.error("Body: {}".format(e.response.text[:500]))
+              raise
+          
+          detected_page_size, total_pages, total_instances = discover_page_metadata(body_meta)
+          logger.info("Detected: pageSize={}, totalPages={}, totalInstances={}".format(
+              detected_page_size, total_pages, total_instances))
+          
+          actual_page_size = detected_page_size or page_size
+          
+          if total_pages is None and total_instances:
+              total_pages = (total_instances + actual_page_size - 1) // actual_page_size
+              logger.info("Calculated totalPages: {}".format(total_pages))
+          
+          if max_pages > 0 and total_pages:
+              total_pages = min(total_pages, max_pages)
+              logger.info("Limited to {} pages".format(total_pages))
+          
+          all_records = []
+          
+          if total_pages is None:
+              logger.warning("No pagination metadata - assuming single page")
+              all_records.extend(extract_records(body_meta))
+          else:
+              logger.info("Fetching {} pages...".format(total_pages))
+              
+              for page in range(start_page, start_page + total_pages):
+                  page_url = build_api_url(base_url, schema_id, page, actual_page_size,
+                                         show_ref, show_dbaas, show_page_meta)
+                  
+                  try:
+                      resp_page = session.post(page_url, headers=headers, json={}, timeout=30)
+                      resp_page.raise_for_status()
+                      body_page = resp_page.json()
+                      
+                      records = extract_records(body_page)
+                      all_records.extend(records)
+                      
+                      if (page - start_page + 1) % 10 == 0 or page == start_page + total_pages - 1:
+                          logger.info("Progress: {}/{} pages, {} records".format(
+                              page - start_page + 1, total_pages, len(all_records)))
+                  except requests.exceptions.RequestException as e:
+                      logger.error("Failed to fetch page {}: {}".format(page, str(e)))
+                      raise
+          
+          logger.info("Total records collected: {}".format(len(all_records)))
+          return all_records
+      
+      def load_from_huggingface(dataset_name, token=None):
+          logger.info("Loading from Hugging Face: {}".format(dataset_name))
+          try:
+              from datasets import load_dataset
+              if token and token.strip():
+                  logger.info("Loading with authentication")
+                  ds = load_dataset(dataset_name, token=token)
+              else:
+                  logger.info("Loading without authentication")
+                  ds = load_dataset(dataset_name)
+              
+              if "train" in ds:
+                  records = ds["train"].to_pandas().to_dict('records')
+              else:
+                  split_name = list(ds.keys())[0]
+                  logger.info("Using split: {}".format(split_name))
+                  records = ds[split_name].to_pandas().to_dict('records')
+              
+              logger.info("Loaded {} records from HF".format(len(records)))
+              return records
+          except Exception as e:
+              logger.error("Failed to load HF dataset: {}".format(str(e)))
+              raise
+      
+      def select_features(df, feature_list):
+          if not feature_list:
+              return df
+          
+          features = [f.strip() for f in feature_list.split(',') if f.strip()]
+          if not features:
+              return df
+          
+          available = [f for f in features if f in df.columns]
+          missing = [f for f in features if f not in df.columns]
+          
+          if missing:
+              logger.warning("Missing features: {}".format(missing))
+          
+          if not available:
+              logger.error("No requested features found")
+              return df
+          
+          logger.info("Selected {}/{} features".format(len(available), len(features)))
+          return df[available]
+      
+      def drop_metadata_cols(df):
+          metadata_cols = [
+              "piMetadata", "execution_timestamp", "pipelineid",
+              "component_id", "projectid", "created_at", "updated_at",
+              "_id", "userId", "orgId", "createdOn", "updatedOn"
+          ]
+          
+          cols_to_drop = [c for c in metadata_cols if c in df.columns]
+          if cols_to_drop:
+              logger.info("Dropping metadata: {}".format(cols_to_drop))
+              df = df.drop(columns=cols_to_drop)
+          
+          return df
+      
+      parser = argparse.ArgumentParser()
+      parser.add_argument('--dataset_source', type=str, required=True)
+      parser.add_argument('--hf_dataset_name', type=str, default='')
+      parser.add_argument('--hf_token', type=str, default='')
+      parser.add_argument('--api_base_url', type=str, default='')
+      parser.add_argument('--access_token', type=str, default='')
+      parser.add_argument('--schema_id', type=str, default='')
+      parser.add_argument('--feature_list', type=str, default='')
+      parser.add_argument('--show_referenced_data', type=str, default='false')
+      parser.add_argument('--show_dbaas_keywords', type=str, default='false')
+      parser.add_argument('--show_pageable_metadata', type=str, default='true')
+      parser.add_argument('--page_size', type=int, default=20)
+      parser.add_argument('--max_pages', type=int, default=-1)
+      parser.add_argument('--start_page', type=int, default=0)
+      parser.add_argument('--max_records', type=int, default=-1)
+      parser.add_argument('--drop_metadata_columns', type=str, default='true')
+      parser.add_argument('--loaded_data', type=str, required=True)
+      parser.add_argument('--load_metadata', type=str, required=True)
+      args = parser.parse_args()
+      
+      try:
+          print("=" * 80)
+          print("GENERIC DATASET LOADER FOR CLUSTERING")
+          print("=" * 80)
+          print("Source: {}".format(args.dataset_source))
+          
+          if args.dataset_source.lower() == "huggingface":
+              if not args.hf_dataset_name:
+                  raise ValueError("hf_dataset_name required for Hugging Face source")
+              
+              hf_token = get_token_value(args.hf_token)
+              records = load_from_huggingface(args.hf_dataset_name, hf_token)
+              source_info = {
+                  'source_type': 'huggingface',
+                  'dataset_name': args.hf_dataset_name
+              }
+              
+          elif args.dataset_source.lower() == "pi_api":
+              if not args.api_base_url or not args.schema_id:
+                  raise ValueError("api_base_url and schema_id required for PI API source")
+              
+              access_token = get_token_value(args.access_token)
+              if not access_token:
+                  raise ValueError("access_token required for PI API")
+              
+              records = load_from_pi_api(
+                  base_url=args.api_base_url,
+                  schema_id=args.schema_id,
+                  access_token=access_token,
+                  page_size=args.page_size,
+                  max_pages=args.max_pages,
+                  show_ref=args.show_referenced_data,
+                  show_dbaas=args.show_dbaas_keywords,
+                  show_page_meta=args.show_pageable_metadata,
+                  start_page=args.start_page
+              )
+              source_info = {
+                  'source_type': 'pi_api',
+                  'api_base_url': args.api_base_url,
+                  'schema_id': args.schema_id
+              }
+          else:
+              raise ValueError("dataset_source must be 'huggingface' or 'pi_api'")
+          
+          if not records:
+              raise ValueError("No records loaded from source")
+          
+          df = pd.DataFrame(records)
+          logger.info("Created DataFrame: {}".format(df.shape))
+          
+          if args.feature_list:
+              df = select_features(df, args.feature_list)
+              logger.info("After feature selection: {}".format(df.shape))
+          
+          if args.drop_metadata_columns.lower() in ('true', '1', 'yes'):
+              df = drop_metadata_cols(df)
+              logger.info("After dropping metadata: {}".format(df.shape))
+          
+          if args.max_records > 0 and len(df) > args.max_records:
+              df = df.head(args.max_records)
+              logger.info("Limited to {} records".format(args.max_records))
+          
+          print("\n[SAVE] Saving outputs...")
+          ensure_dir(args.loaded_data)
+          ensure_dir(args.load_metadata)
+          
+          df.to_csv(args.loaded_data, index=False)
+          logger.info("Data saved: {}".format(args.loaded_data))
+          
+          metadata = {
+              'timestamp': datetime.utcnow().isoformat() + 'Z',
+              'component': 'generic_dataset_loader_clustering',
+              'source': source_info,
+              'records_loaded': len(records),
+              'final_shape': {
+                  'rows': int(df.shape[0]),
+                  'cols': int(df.shape[1])
+              },
+              'columns': list(df.columns),
+              'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
+              'statistics': {
+                  'numeric_columns': df.select_dtypes(include=[np.number]).columns.tolist(),
+                  'categorical_columns': df.select_dtypes(exclude=[np.number]).columns.tolist(),
+                  'memory_mb': float(df.memory_usage(deep=True).sum() / 1024**2)
+              }
+          }
+          
+          with open(args.load_metadata, 'w') as f:
+              json.dump(metadata, f, indent=2)
+          logger.info("Metadata saved: {}".format(args.load_metadata))
+          
+          print("\n" + "=" * 80)
+          print("DATASET LOADER COMPLETE")
+          print("=" * 80)
+          print("Source: {}".format(args.dataset_source))
+          print("Records: {}".format(len(records)))
+          print("Final shape: {} rows x {} columns".format(df.shape[0], df.shape[1]))
+          print("Numeric columns: {}".format(len(metadata['statistics']['numeric_columns'])))
+          print("Categorical columns: {}".format(len(metadata['statistics']['categorical_columns'])))
+          print("=" * 80 + "\n")
+          
+      except Exception as e:
+          print("\n[ERROR] {}".format(str(e)), file=sys.stderr)
+          import traceback
+          traceback.print_exc()
+          sys.exit(1)
+    args:
+    - --dataset_source
+    - {inputValue: dataset_source}
+    - --hf_dataset_name
+    - {inputValue: hf_dataset_name}
+    - --hf_token
+    - {inputValue: hf_token}
+    - --api_base_url
+    - {inputValue: api_base_url}
+    - --access_token
+    - {inputValue: access_token}
+    - --schema_id
+    - {inputValue: schema_id}
+    - --feature_list
+    - {inputValue: feature_list}
+    - --show_referenced_data
+    - {inputValue: show_referenced_data}
+    - --show_dbaas_keywords
+    - {inputValue: show_dbaas_keywords}
+    - --show_pageable_metadata
+    - {inputValue: show_pageable_metadata}
+    - --page_size
+    - {inputValue: page_size}
+    - --max_pages
+    - {inputValue: max_pages}
+    - --start_page
+    - {inputValue: start_page}
+    - --max_records
+    - {inputValue: max_records}
+    - --drop_metadata_columns
+    - {inputValue: drop_metadata_columns}
+    - --loaded_data
+    - {outputPath: loaded_data}
+    - --load_metadata
+    - {outputPath: load_metadata}
