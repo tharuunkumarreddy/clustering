@@ -256,16 +256,15 @@ implementation:
       args = parser.parse_args()
       
       try:
-          # Convert string parameters to integers
           page_size = int(args.page_size)
           max_pages = int(args.max_pages)
           start_page = int(args.start_page)
           max_records = int(args.max_records)
           
-          print("=" * 80)
-          print("DATASET LOADER FOR CLUSTERING")
-          print("=" * 80)
-          print("Source: " + args.dataset_source)
+          logger.info("=" * 80)
+          logger.info("DATASET LOADER FOR CLUSTERING")
+          logger.info("=" * 80)
+          logger.info("Source: " + args.dataset_source)
           
           if args.dataset_source.lower() == "huggingface":
               if not args.hf_dataset_name:
@@ -316,7 +315,7 @@ implementation:
               df = df.head(max_records)
               logger.info("Limited to: " + str(max_records))
           
-          print("\n[SAVE] Saving outputs...")
+          logger.info("Saving outputs...")
           ensure_dir(args.loaded_data)
           ensure_dir(args.load_metadata)
           
@@ -342,16 +341,16 @@ implementation:
               json.dump(metadata, f, indent=2)
           logger.info("Metadata saved")
           
-          print("\n" + "=" * 80)
-          print("COMPLETE")
-          print("=" * 80)
-          print("Source: " + args.dataset_source)
-          print("Records: " + str(len(records)))
-          print("Shape: " + str(df.shape[0]) + " x " + str(df.shape[1]))
-          print("=" * 80 + "\n")
+          logger.info("=" * 80)
+          logger.info("COMPLETE")
+          logger.info("=" * 80)
+          logger.info("Source: " + args.dataset_source)
+          logger.info("Records: " + str(len(records)))
+          logger.info("Shape: " + str(df.shape[0]) + " x " + str(df.shape[1]))
+          logger.info("=" * 80)
           
       except Exception as e:
-          print("\n[ERROR] " + str(e), file=sys.stderr)
+          logger.error("ERROR: " + str(e))
           import traceback
           traceback.print_exc()
           sys.exit(1)
