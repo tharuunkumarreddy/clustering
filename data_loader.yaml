@@ -16,7 +16,7 @@ inputs:
 
 outputs:
 - {name: loaded_data, type: Dataset, description: 'Loaded dataset'}
-- {name: load_metadata, type: String, description: 'Loading metadata'}
+- {name: load_metadata, type: Dataset, description: 'Loading metadata JSON'}
 
 implementation:
   container:
@@ -204,7 +204,6 @@ implementation:
           print("PI SCHEMA DATA LOADER v2")
           print("=" * 80)
           
-          # Convert string parameters to integers
           page_size = int(args.page_size)
           max_pages = int(args.max_pages)
           start_page = int(args.start_page)
@@ -326,4 +325,3 @@ implementation:
     - {outputPath: loaded_data}
     - --load_metadata
     - {outputPath: load_metadata}
-    
