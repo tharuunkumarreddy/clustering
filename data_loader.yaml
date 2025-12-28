@@ -1,46 +1,32 @@
-name: PI Schema Data Loader for Clustering v2.0
-description: |
-  Load data from PI schemas for clustering preprocessing.
-  Updated to handle actual PI instance API structure.
-  
-  API Format: /pi-entity-instances-service/v3.0/schemas/{schemaId}/instances/list
-  
-  Supports:
-  - PI schema instance queries
-  - Feature selection from schema attributes  
-  - Pagination with showPageableMetaData=true
-  - Query parameters: showReferencedData, showDBaaSReservedKeywords
-  - No train-test split (clustering is unsupervised)
+name: PI Schema Data Loader v2
+description: Load data from PI schemas for clustering. Handles pagination and feature selection.
 
 inputs:
-  - {name: api_base_url, type: String, description: 'Base API URL'}
-  - {name: access_token, type: String, description: 'Bearer access token for API authentication'}
-  - {name: schema_id, type: String, description: 'PI Schema ID'}
-  - {name: feature_list, type: String, default: "", description: 'Comma-separated features (empty = all)'}
-  - {name: show_referenced_data, type: String, default: "false", description: 'Include referenced data'}
-  - {name: show_dbaas_keywords, type: String, default: "false", description: 'Show DBaaS keywords'}
-  - {name: show_pageable_metadata, type: String, default: "true", description: 'Include pagination metadata'}
-  - {name: page_size, type: Integer, default: 20, description: 'Page size for pagination'}
-  - {name: max_pages, type: Integer, default: -1, description: 'Max pages to fetch (-1 = all pages)'}
-  - {name: start_page, type: Integer, default: 0, description: 'Starting page number'}
-  - {name: drop_metadata_columns, type: String, default: "true", description: 'Drop PI metadata columns'}
-  - {name: validate_clustering_readiness, type: String, default: "true", description: 'Validate data for clustering'}
+- {name: api_base_url, type: String, description: 'PI API base URL'}
+- {name: access_token, type: String, description: 'Bearer access token'}
+- {name: schema_id, type: String, description: 'PI Schema ID'}
+- {name: feature_list, type: String, default: '', description: 'Comma-separated features'}
+- {name: show_referenced_data, type: String, default: 'false', description: 'Include referenced data'}
+- {name: show_dbaas_keywords, type: String, default: 'false', description: 'Show DBaaS keywords'}
+- {name: show_pageable_metadata, type: String, default: 'true', description: 'Include pagination metadata'}
+- {name: page_size, type: Integer, default: '20', description: 'Page size'}
+- {name: max_pages, type: Integer, default: '-1', description: 'Max pages (-1 = all)'}
+- {name: start_page, type: Integer, default: '0', description: 'Starting page'}
+- {name: drop_metadata_columns, type: String, default: 'true', description: 'Drop metadata columns'}
 
 outputs:
-  - {name: loaded_data, type: Dataset, description: 'Loaded dataset from PI schema'}
-  - {name: load_metadata, type: String, description: 'Loading metadata with schema info'}
+- {name: loaded_data, type: Dataset, description: 'Loaded dataset'}
+- {name: load_metadata, type: String, description: 'Loading metadata'}
 
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:vtest4
     command:
     - sh
-    - -ec
+    - -c
     - |
-      program_path=$(mktemp)
-      printf "%s" "$0" > "$program_path"
-      python3 -u "$program_path" "$@"
-    - |
+      set -e
+      python3 -u -c '
       import argparse
       import os
       import sys
@@ -52,15 +38,15 @@ implementation:
       from urllib3.util.retry import Retry
       import logging
       from datetime import datetime
-
-      logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
-      logger = logging.getLogger("pi_schema_loader")
-
+      
+      logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+      logger = logging.getLogger("pi_loader")
+      
       def ensure_dir(path):
           d = os.path.dirname(path)
           if d and not os.path.exists(d):
               os.makedirs(d, exist_ok=True)
-
+      
       def extract_records(body):
           if isinstance(body, list):
               return body
@@ -68,20 +54,20 @@ implementation:
               for key in ["data", "content", "records", "results", "items", "instances"]:
                   if key in body and isinstance(body[key], list):
                       return body[key]
-              if any(k for k in body.keys() if not k.startswith('page') and not k.startswith('total')):
+              if any(k for k in body.keys() if not k.startswith("page") and not k.startswith("total")):
                   return [body]
           return []
-
+      
       def discover_page_metadata(body):
           page_size = None
           total_pages = None
           total_instances = None
-
+          
           if isinstance(body, dict):
               page_size = body.get("pageSize") or body.get("size")
               total_pages = body.get("totalPages")
               total_instances = body.get("totalInstances") or body.get("totalElements")
-
+              
               if "page" in body and isinstance(body["page"], dict):
                   p = body["page"]
                   page_size = page_size or p.get("pageSize") or p.get("size")
@@ -94,72 +80,62 @@ implementation:
               
               if total_instances and page_size and not total_pages:
                   total_pages = (total_instances + page_size - 1) // page_size
-
+          
           return page_size, total_pages, total_instances
-
+      
       def build_api_url(base_url, schema_id, page, size, show_ref, show_dbaas, show_page_meta):
-          base_url = base_url.rstrip('/')
-          url = "{}/schemas/{}/instances/list".format(base_url, schema_id)
+          base_url = base_url.rstrip("/")
+          url = base_url + "/schemas/" + schema_id + "/instances/list"
           params = [
-              "showReferencedData={}".format(show_ref),
-              "showDBaaSReservedKeywords={}".format(show_dbaas),
-              "showPageableMetaData={}".format(show_page_meta),
-              "size={}".format(size),
-              "page={}".format(page)
+              "showReferencedData=" + show_ref,
+              "showDBaaSReservedKeywords=" + show_dbaas,
+              "showPageableMetaData=" + show_page_meta,
+              "size=" + str(size),
+              "page=" + str(page)
           ]
-          return "{}?{}".format(url, '&'.join(params))
-
-      def fetch_schema_data(session, base_url, schema_id, headers, page_size, max_pages, 
-                           show_ref, show_dbaas, show_page_meta, start_page):
+          return url + "?" + "&".join(params)
+      
+      def fetch_data(session, base_url, schema_id, headers, page_size, max_pages, show_ref, show_dbaas, show_page_meta, start_page):
+          logger.info("Loading from PI schema: " + schema_id)
           
-          logger.info("Starting data fetch from schema: {}".format(schema_id))
-          logger.info("Page size: {}, Max pages: {}".format(page_size, max_pages if max_pages > 0 else 'all'))
-          
-          meta_url = build_api_url(base_url, schema_id, start_page, page_size, 
-                                  show_ref, show_dbaas, show_page_meta)
-          
-          logger.info("API URL: {}".format(meta_url))
+          meta_url = build_api_url(base_url, schema_id, start_page, page_size, show_ref, show_dbaas, show_page_meta)
+          logger.info("API URL: " + meta_url)
           
           try:
               resp_meta = session.post(meta_url, headers=headers, json={}, timeout=30)
               resp_meta.raise_for_status()
               body_meta = resp_meta.json()
-              
-              logger.info("Response status: {}".format(resp_meta.status_code))
-              
+              logger.info("Status: " + str(resp_meta.status_code))
           except requests.exceptions.RequestException as e:
-              logger.error("API request failed: {}".format(str(e)))
-              if hasattr(e, 'response') and e.response is not None:
-                  logger.error("Status: {}".format(e.response.status_code))
-                  logger.error("Body: {}".format(e.response.text[:500]))
+              logger.error("Request failed: " + str(e))
+              if hasattr(e, "response") and e.response is not None:
+                  logger.error("Status: " + str(e.response.status_code))
+                  logger.error("Body: " + str(e.response.text[:500]))
               raise
-
-          detected_page_size, total_pages, total_instances = discover_page_metadata(body_meta)
           
-          logger.info("Detected: pageSize={}, totalPages={}, totalInstances={}".format(
-              detected_page_size, total_pages, total_instances))
-
+          detected_page_size, total_pages, total_instances = discover_page_metadata(body_meta)
+          logger.info("Detected: pageSize=" + str(detected_page_size) + ", totalPages=" + str(total_pages) + ", totalInstances=" + str(total_instances))
+          
           actual_page_size = detected_page_size or page_size
           
           if total_pages is None and total_instances:
               total_pages = (total_instances + actual_page_size - 1) // actual_page_size
-              logger.info("Calculated totalPages: {}".format(total_pages))
+              logger.info("Calculated pages: " + str(total_pages))
           
           if max_pages > 0 and total_pages:
               total_pages = min(total_pages, max_pages)
-              logger.info("Limited to {} pages (max_pages={})".format(total_pages, max_pages))
-
+              logger.info("Limited to: " + str(total_pages) + " pages")
+          
           all_records = []
-
+          
           if total_pages is None:
-              logger.warning("No pagination metadata - assuming single page")
+              logger.warning("No pagination - single page")
               all_records.extend(extract_records(body_meta))
           else:
-              logger.info("Fetching {} pages...".format(total_pages))
+              logger.info("Fetching " + str(total_pages) + " pages...")
               
               for page in range(start_page, start_page + total_pages):
-                  page_url = build_api_url(base_url, schema_id, page, actual_page_size,
-                                         show_ref, show_dbaas, show_page_meta)
+                  page_url = build_api_url(base_url, schema_id, page, actual_page_size, show_ref, show_dbaas, show_page_meta)
                   
                   try:
                       resp_page = session.post(page_url, headers=headers, json={}, timeout=30)
@@ -170,21 +146,19 @@ implementation:
                       all_records.extend(records)
                       
                       if (page - start_page + 1) % 10 == 0 or page == start_page + total_pages - 1:
-                          logger.info("Progress: {}/{} pages, {} records".format(
-                              page - start_page + 1, total_pages, len(all_records)))
-                      
+                          logger.info("Progress: " + str(page - start_page + 1) + "/" + str(total_pages) + " pages, " + str(len(all_records)) + " records")
                   except requests.exceptions.RequestException as e:
-                      logger.error("Failed to fetch page {}: {}".format(page, str(e)))
+                      logger.error("Failed page " + str(page) + ": " + str(e))
                       raise
-
-          logger.info("Total records collected: {}".format(len(all_records)))
+          
+          logger.info("Total: " + str(len(all_records)) + " records")
           return all_records
-
+      
       def select_features(df, feature_list):
           if not feature_list:
               return df
           
-          features = [f.strip() for f in feature_list.split(',') if f.strip()]
+          features = [f.strip() for f in feature_list.split(",") if f.strip()]
           if not features:
               return df
           
@@ -192,121 +166,62 @@ implementation:
           missing = [f for f in features if f not in df.columns]
           
           if missing:
-              logger.warning("Missing features: {}".format(missing))
+              logger.warning("Missing: " + str(missing))
           
           if not available:
-              logger.error("No requested features found in schema")
+              logger.error("No features found")
               return df
           
-          logger.info("Selected {}/{} features".format(len(available), len(features)))
+          logger.info("Selected " + str(len(available)) + "/" + str(len(features)))
           return df[available]
-
+      
       def drop_metadata_cols(df):
-          metadata_cols = [
-              "piMetadata", "execution_timestamp", "pipelineid", 
-              "component_id", "projectid", "created_at", "updated_at",
-              "_id", "userId", "orgId", "createdOn", "updatedOn"
-          ]
-          
+          metadata_cols = ["piMetadata", "execution_timestamp", "pipelineid", "component_id", "projectid", "created_at", "updated_at", "_id", "userId", "orgId", "createdOn", "updatedOn"]
           cols_to_drop = [c for c in metadata_cols if c in df.columns]
           if cols_to_drop:
-              logger.info("Dropping metadata columns: {}".format(cols_to_drop))
+              logger.info("Dropping: " + str(cols_to_drop))
               df = df.drop(columns=cols_to_drop)
-          
           return df
-
-      def validate_for_clustering(df):
-          validation = {
-              'is_valid': True,
-              'errors': [],
-              'warnings': [],
-              'checks_passed': []
-          }
-          
-          if df.empty:
-              validation['is_valid'] = False
-              validation['errors'].append("Dataset is empty")
-              return validation
-          
-          validation['checks_passed'].append("Dataset has {} samples".format(len(df)))
-          
-          if len(df) < 2:
-              validation['is_valid'] = False
-              validation['errors'].append("Need at least 2 samples for clustering")
-              return validation
-          
-          numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-          categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-          
-          validation['numeric_columns'] = numeric_cols
-          validation['categorical_columns'] = categorical_cols
-          validation['checks_passed'].append("Found {} numeric, {} categorical columns".format(
-              len(numeric_cols), len(categorical_cols)))
-          
-          if len(numeric_cols) == 0 and len(categorical_cols) == 0:
-              validation['is_valid'] = False
-              validation['errors'].append("No valid columns found")
-              return validation
-          
-          constant_cols = [col for col in df.columns if df[col].nunique(dropna=True) <= 1]
-          if constant_cols:
-              validation['warnings'].append("Constant columns (consider removing): {}".format(constant_cols))
-          
-          missing_total = df.isnull().sum().sum()
-          if missing_total > 0:
-              missing_pct = (missing_total / (df.shape[0] * df.shape[1])) * 100
-              validation['warnings'].append("Missing values: {} ({:.2f}%)".format(missing_total, missing_pct))
-          
-          return validation
-
+      
       parser = argparse.ArgumentParser()
-      parser.add_argument('--api_base_url', type=str, required=True)
-      parser.add_argument('--access_token', type=str, required=True)
-      parser.add_argument('--schema_id', type=str, required=True)
-      parser.add_argument('--feature_list', type=str, default='')
-      parser.add_argument('--show_referenced_data', type=str, default='false')
-      parser.add_argument('--show_dbaas_keywords', type=str, default='false')
-      parser.add_argument('--show_pageable_metadata', type=str, default='true')
-      parser.add_argument('--page_size', type=int, default=20)
-      parser.add_argument('--max_pages', type=int, default=-1)
-      parser.add_argument('--start_page', type=int, default=0)
-      parser.add_argument('--drop_metadata_columns', type=str, default='true')
-      parser.add_argument('--validate_clustering_readiness', type=str, default='true')
-      parser.add_argument('--loaded_data', type=str, required=True)
-      parser.add_argument('--load_metadata', type=str, required=True)
+      parser.add_argument("--api_base_url", type=str, required=True)
+      parser.add_argument("--access_token", type=str, required=True)
+      parser.add_argument("--schema_id", type=str, required=True)
+      parser.add_argument("--feature_list", type=str, default="")
+      parser.add_argument("--show_referenced_data", type=str, default="false")
+      parser.add_argument("--show_dbaas_keywords", type=str, default="false")
+      parser.add_argument("--show_pageable_metadata", type=str, default="true")
+      parser.add_argument("--page_size", type=int, default=20)
+      parser.add_argument("--max_pages", type=int, default=-1)
+      parser.add_argument("--start_page", type=int, default=0)
+      parser.add_argument("--drop_metadata_columns", type=str, default="true")
+      parser.add_argument("--loaded_data", type=str, required=True)
+      parser.add_argument("--load_metadata", type=str, required=True)
       args = parser.parse_args()
-
+      
       try:
           print("=" * 80)
-          print("CLUSTERING PREPROCESSING - PI SCHEMA DATA LOADER v2.0")
+          print("PI SCHEMA DATA LOADER v2")
           print("=" * 80)
           
-          with open(args.access_token, 'r') as f:
+          with open(args.access_token, "r") as f:
               access_token = f.read().strip()
-
+          
           session = requests.Session()
-          retries = Retry(
-              total=5,
-              backoff_factor=1,
-              status_forcelist=[500, 502, 503, 504],
-              allowed_methods=["POST"]
-          )
+          retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504], allowed_methods=["POST"])
           adapter = HTTPAdapter(max_retries=retries)
           session.mount("http://", adapter)
           session.mount("https://", adapter)
-
-          headers = {
-              "Content-Type": "application/json",
-              "Authorization": "Bearer {}".format(access_token)
-          }
-
-          print("\n[CONFIG] Schema ID: {}".format(args.schema_id))
-          print("[CONFIG] API Base URL: {}".format(args.api_base_url))
-          print("[CONFIG] Page size: {}".format(args.page_size))
           
-          print("\n[FETCH] Loading data from PI schema...")
+          headers = {"Content-Type": "application/json", "Authorization": "Bearer " + access_token}
           
-          records = fetch_schema_data(
+          print("\n[CONFIG] Schema: " + args.schema_id)
+          print("[CONFIG] Base URL: " + args.api_base_url)
+          print("[CONFIG] Page size: " + str(args.page_size))
+          
+          print("\n[FETCH] Loading data...")
+          
+          records = fetch_data(
               session=session,
               base_url=args.api_base_url,
               schema_id=args.schema_id,
@@ -320,85 +235,63 @@ implementation:
           )
           
           if not records:
-              raise ValueError("No records retrieved from PI schema")
-
+              raise ValueError("No records retrieved")
+          
           df = pd.DataFrame(records)
-          logger.info("Created DataFrame: {}".format(df.shape))
-
+          logger.info("DataFrame: " + str(df.shape))
+          
           if args.feature_list:
               df = select_features(df, args.feature_list)
-              logger.info("After feature selection: {}".format(df.shape))
-
-          if args.drop_metadata_columns.lower() in ('true', '1', 'yes'):
-              print("\n[CLEAN] Dropping metadata columns...")
+              logger.info("After selection: " + str(df.shape))
+          
+          if args.drop_metadata_columns.lower() in ("true", "1", "yes"):
+              print("\n[CLEAN] Dropping metadata...")
               df = drop_metadata_cols(df)
-              logger.info("Final shape: {}".format(df.shape))
-
-          if args.validate_clustering_readiness.lower() in ('true', '1', 'yes'):
-              print("\n[VALIDATE] Checking clustering readiness...")
-              validation = validate_for_clustering(df)
-              
-              for check in validation['checks_passed']:
-                  logger.info("  {}".format(check))
-              for warning in validation['warnings']:
-                  logger.warning("  {}".format(warning))
-              for error in validation['errors']:
-                  logger.error("  {}".format(error))
-              
-              if not validation['is_valid']:
-                  raise ValueError("Data validation failed for clustering")
-              
-              logger.info("  Data is ready for clustering")
-          else:
-              validation = {'is_valid': True, 'checks_passed': ['Validation skipped']}
-
-          print("\n[SAVE] Saving outputs...")
+              logger.info("Final: " + str(df.shape))
+          
+          print("\n[SAVE] Saving...")
           ensure_dir(args.loaded_data)
           ensure_dir(args.load_metadata)
           
           df.to_csv(args.loaded_data, index=False)
-          logger.info("  Data: {}".format(args.loaded_data))
+          logger.info("Data: " + args.loaded_data)
           
           metadata = {
-              'timestamp': datetime.utcnow().isoformat() + 'Z',
-              'component': 'pi_schema_data_loader_v2',
-              'api_base_url': args.api_base_url,
-              'schema_id': args.schema_id,
-              'records_fetched': len(records),
-              'final_shape': {
-                  'rows': int(df.shape[0]),
-                  'cols': int(df.shape[1])
-              },
-              'columns': list(df.columns),
-              'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
-              'validation': validation,
-              'statistics': {
-                  'numeric_columns': validation.get('numeric_columns', []),
-                  'categorical_columns': validation.get('categorical_columns', []),
-                  'memory_mb': float(df.memory_usage(deep=True).sum() / 1024**2)
+              "timestamp": datetime.utcnow().isoformat() + "Z",
+              "component": "pi_schema_data_loader_v2",
+              "api_base_url": args.api_base_url,
+              "schema_id": args.schema_id,
+              "records_fetched": len(records),
+              "final_shape": {"rows": int(df.shape[0]), "cols": int(df.shape[1])},
+              "columns": list(df.columns),
+              "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+              "statistics": {
+                  "numeric_columns": df.select_dtypes(include=[np.number]).columns.tolist(),
+                  "categorical_columns": df.select_dtypes(exclude=[np.number]).columns.tolist(),
+                  "memory_mb": float(df.memory_usage(deep=True).sum() / 1024**2)
               }
           }
           
-          with open(args.load_metadata, 'w') as f:
+          with open(args.load_metadata, "w") as f:
               json.dump(metadata, f, indent=2)
-          logger.info("  Metadata: {}".format(args.load_metadata))
+          logger.info("Metadata: " + args.load_metadata)
           
           print("\n" + "=" * 80)
-          print("PI SCHEMA DATA LOADER COMPLETE")
+          print("COMPLETE")
           print("=" * 80)
-          print("Schema ID: {}".format(args.schema_id))
-          print("Records loaded: {}".format(len(records)))
-          print("Final dataset: {} rows x {} columns".format(df.shape[0], df.shape[1]))
-          print("Numeric columns: {}".format(len(validation.get('numeric_columns', []))))
-          print("Categorical columns: {}".format(len(validation.get('categorical_columns', []))))
-          print("Memory usage: {:.2f} MB".format(metadata['statistics']['memory_mb']))
+          print("Schema: " + args.schema_id)
+          print("Records: " + str(len(records)))
+          print("Shape: " + str(df.shape[0]) + " x " + str(df.shape[1]))
+          print("Numeric: " + str(len(metadata["statistics"]["numeric_columns"])))
+          print("Categorical: " + str(len(metadata["statistics"]["categorical_columns"])))
           print("=" * 80 + "\n")
           
       except Exception as e:
-          print("\n[ERROR] {}".format(str(e)), file=sys.stderr)
+          print("\n[ERROR] " + str(e), file=sys.stderr)
           import traceback
           traceback.print_exc()
           sys.exit(1)
+      ' "$@"
     args:
     - --api_base_url
     - {inputValue: api_base_url}
@@ -422,8 +315,6 @@ implementation:
     - {inputValue: start_page}
     - --drop_metadata_columns
     - {inputValue: drop_metadata_columns}
-    - --validate_clustering_readiness
-    - {inputValue: validate_clustering_readiness}
     - --loaded_data
     - {outputPath: loaded_data}
     - --load_metadata
