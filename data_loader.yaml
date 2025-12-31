@@ -57,6 +57,7 @@ implementation:
         import json
         import argparse
         import logging
+        import shutil
         import pandas as pd
         import numpy as np
         import requests
@@ -661,7 +662,12 @@ implementation:
                 
                 # Save ground truth
                 if ground_truth is not None:
+                    # Save using np.save then rename to remove .npy extension
                     np.save(args.output_ground_truth, ground_truth, allow_pickle=False)
+                    # np.save automatically adds .npy extension, so we need to rename
+                    npy_path = args.output_ground_truth + '.npy'
+                    if os.path.exists(npy_path):
+                        shutil.move(npy_path, args.output_ground_truth)
                     logger.info(f"Ground truth saved: {args.output_ground_truth}")
                     logger.info(f"  Shape: {ground_truth.shape}")
                 else:
