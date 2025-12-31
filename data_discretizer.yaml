@@ -52,7 +52,7 @@ implementation:
         
         
         def ensure_directory_exists(file_path):
-            """Create directory if it doesn't exist"""
+            #Create directory if it doesn't exist#
             directory = os.path.dirname(file_path)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory, exist_ok=True)
@@ -60,7 +60,7 @@ implementation:
         
         
         def load_data(input_path):
-            """Load data from CSV or Parquet file"""
+            #Load data from CSV or Parquet file#
             logger.info(f"Loading dataset from: {input_path}")
             
             ext = Path(input_path).suffix.lower()
@@ -82,7 +82,7 @@ implementation:
         
         
         def apply_discretization(df, method, method_params):
-            """
+            #
             Apply discretization (binning) to numeric columns
             
             Parameters:
@@ -102,7 +102,7 @@ implementation:
                 Fitted discretizer object
             metadata : dict
                 Discretization metadata
-            """
+            #
             logger.info("="*80)
             logger.info("APPLYING DISCRETIZATION")
             logger.info("="*80)
@@ -456,3 +456,4 @@ implementation:
       - {outputPath: discretizer}
       - --output_metadata
       - {outputPath: metadata}
+
