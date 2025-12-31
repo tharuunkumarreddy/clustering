@@ -65,7 +65,7 @@ implementation:
         
         
         def ensure_directory_exists(file_path):
-            #Create directory if it doesn't exist#
+            # Create directory if it doesn't exist
             directory = os.path.dirname(file_path)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory, exist_ok=True)
@@ -73,7 +73,7 @@ implementation:
         
         
         def load_data(input_path):
-            #Load data from CSV or Parquet file#
+            # Load data from CSV or Parquet file
             logger.info(f"Loading dataset from: {input_path}")
             
             ext = Path(input_path).suffix.lower()
@@ -95,19 +95,9 @@ implementation:
         
         
         def load_ground_truth(ground_truth_path):
-            #
-            Load ground truth labels if available
-            
-            Parameters:
-            -----------
-            ground_truth_path : str
-                Path to ground truth file
-            
-            Returns:
-            --------
-            ground_truth : np.ndarray or None
-                Ground truth labels
-            #
+            # Load ground truth labels if available
+            # Parameters: ground_truth_path
+            # Returns: ground_truth array or None
             if not ground_truth_path or ground_truth_path.lower() == 'none':
                 logger.info("No ground truth provided")
                 return None
@@ -158,35 +148,9 @@ implementation:
         
         
         def split_data(df, ground_truth, test_size, random_state, stratify):
-            #
-            Split data into train and test sets
-            
-            Parameters:
-            -----------
-            df : pd.DataFrame
-                Dataset to split
-            ground_truth : np.ndarray or None
-                Ground truth labels for stratification
-            test_size : float
-                Proportion of test data (0-1)
-            random_state : int
-                Random seed
-            stratify : bool
-                Whether to use stratified splitting
-            
-            Returns:
-            --------
-            train_df : pd.DataFrame
-                Training data
-            test_df : pd.DataFrame
-                Test data
-            train_gt : np.ndarray or None
-                Training ground truth
-            test_gt : np.ndarray or None
-                Test ground truth
-            split_info : dict
-                Split statistics
-            #
+            # Split data into train and test sets
+            # Parameters: df, ground_truth, test_size, random_state, stratify
+            # Returns: train_df, test_df, train_gt, test_gt, split_info
             logger.info("="*80)
             logger.info("SPLITTING DATA")
             logger.info("="*80)
