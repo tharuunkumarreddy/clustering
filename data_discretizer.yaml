@@ -52,7 +52,7 @@ implementation:
         
         
         def ensure_directory_exists(file_path):
-            #Create directory if it doesn't exist#
+            # Create directory if it doesn't exist
             directory = os.path.dirname(file_path)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory, exist_ok=True)
@@ -60,7 +60,7 @@ implementation:
         
         
         def load_data(input_path):
-            #Load data from CSV or Parquet file#
+            # Load data from CSV or Parquet file
             logger.info(f"Loading dataset from: {input_path}")
             
             ext = Path(input_path).suffix.lower()
@@ -82,27 +82,9 @@ implementation:
         
         
         def apply_discretization(df, method, method_params):
-            #
-            Apply discretization (binning) to numeric columns
-            
-            Parameters:
-            -----------
-            df : pd.DataFrame
-                Input dataset
-            method : str
-                Discretization method
-            method_params : dict
-                Method-specific parameters
-            
-            Returns:
-            --------
-            df_discretized : pd.DataFrame
-                Discretized dataset
-            discretizer : object
-                Fitted discretizer object
-            metadata : dict
-                Discretization metadata
-            #
+            # Apply discretization (binning) to numeric columns
+            # Parameters: df, method, method_params
+            # Returns: df_discretized, discretizer object, metadata dict
             logger.info("="*80)
             logger.info("APPLYING DISCRETIZATION")
             logger.info("="*80)
@@ -355,7 +337,7 @@ implementation:
                                help="Discretization method")
             parser.add_argument("--method_params", type=str, default='{}',
                                help="Method-specific parameters as JSON")
-            parser.add_argument("--output_output_data", required=True,
+            parser.add_argument("--output_data", required=True,
                                help="Output path for discretized dataset")
             parser.add_argument("--output_discretizer", required=True,
                                help="Output path for fitted discretizer")
@@ -373,7 +355,7 @@ implementation:
             
             try:
                 # Ensure output directories
-                ensure_directory_exists(args.output_output_data)
+                ensure_directory_exists(args.output_data)
                 ensure_directory_exists(args.output_discretizer)
                 ensure_directory_exists(args.output_metadata)
                 
@@ -401,8 +383,8 @@ implementation:
                 )
                 
                 # Save discretized data
-                df_discretized.to_csv(args.output_output_data, index=False)
-                logger.info(f"Discretized data saved: {args.output_output_data}")
+                df_discretized.to_csv(args.output_data, index=False)
+                logger.info(f"Discretized data saved: {args.output_data}")
                 
                 # Save discretizer
                 with open(args.output_discretizer, 'wb') as f:
@@ -456,5 +438,3 @@ implementation:
       - {outputPath: discretizer}
       - --output_metadata
       - {outputPath: metadata}
-
-
