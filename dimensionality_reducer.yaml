@@ -1,311 +1,570 @@
-name: Dimensionality Reducer v1.0
-description: |
-  Dimensionality reduction for clustering preprocessing.
-  Implements methods from section 3.3 of the framework:
-  - Linear: PCA, Factor Analysis
-  - Non-linear: Kernel PCA, t-SNE, UMAP (if available)
-  - Auto-selection based on data characteristics
+name: Generic Dimensionality Reduction Component
+description: Comprehensive dimensionality reduction for clustering with 9 methods including PCA, Kernel PCA, ICA, t-SNE, Isomap, LLE, MDS, Factor Analysis, and Sparse PCA. Supports auto-selection of components and method-specific parameters via JSON.
 
 inputs:
-  - {name: input_data, type: Dataset, description: 'Input dataset after outlier handling'}
-  - {name: outlier_metadata, type: Data, description: 'Metadata from previous step', optional: true}
-  - {name: method, type: String, default: "auto", description: 'Method: auto, none, pca, kernel_pca, factor_analysis, truncated_svd'}
-  - {name: n_components, type: String, default: "auto", description: 'Number of components or "auto" for variance-based'}
-  - {name: variance_threshold, type: Float, default: "0.95", description: 'Variance to retain for auto PCA (0-1)'}
-  - {name: max_components, type: Integer, default: "50", description: 'Maximum components to keep'}
-  - {name: kernel, type: String, default: "rbf", description: 'Kernel for kernel PCA: rbf, poly, sigmoid, linear'}
-  - {name: standardize_before, type: String, default: "true", description: 'Standardize data before reduction'}
+  - name: input_data
+    type: Data
+    description: 'Input dataset (CSV or Parquet)'
+  - name: method
+    type: String
+    description: 'Reduction method: pca, kernel_pca, ica, factor_analysis, sparse_pca, tsne, isomap, lle, mds'
+    default: 'pca'
+  - name: method_params
+    type: String
+    description: 'Method-specific parameters as JSON string. Examples: {"n_components":"auto"}, {"kernel":"rbf"}, {"perplexity":30}'
+    default: '{}'
 
 outputs:
-  - {name: reduced_data, type: Dataset, description: 'Dimensionally reduced dataset'}
-  - {name: reduction_metadata, type: Data, description: 'Reduction metadata with explained variance'}
+  - name: output_data
+    type: Data
+    description: 'Reduced dataset with component features (CSV format)'
+  - name: reducer
+    type: Model
+    description: 'Fitted dimensionality reducer (PKL format)'
+  - name: metadata
+    type: Data
+    description: 'Reduction metadata including variance explained (JSON format)'
 
 implementation:
   container:
-    image: python:3.9-slim
+    image: nikhilv215/nesy-factory:v23
     command:
       - python3
       - -u
       - -c
       - |
-        import os, sys, json, argparse
-        import subprocess
-        
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
-                       "pandas", "numpy", "pyarrow", "scikit-learn"], check=True)
-        
+        import os
+        import sys
+        import json
+        import argparse
+        import logging
+        import pickle
         import pandas as pd
         import numpy as np
-        from datetime import datetime
-        from sklearn.decomposition import PCA, KernelPCA, FactorAnalysis, TruncatedSVD
-        from sklearn.preprocessing import StandardScaler
+        from sklearn.decomposition import PCA, KernelPCA, FastICA, FactorAnalysis, SparsePCA
+        from sklearn.manifold import TSNE, Isomap, LocallyLinearEmbedding, MDS
+        from pathlib import Path
         
-        def ensure_dir(path):
-            d = os.path.dirname(path)
-            if d and not os.path.exists(d):
-                os.makedirs(d, exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger = logging.getLogger('dimensionality_reduction')
         
-        def select_auto_method(df):
-            """Auto-select dimensionality reduction method"""
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
-            n_features = len(numeric_cols)
-            n_samples = len(df)
+        
+        def ensure_directory_exists(file_path):
+            #Create directory if it doesn't exist#
+            directory = os.path.dirname(file_path)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
+                logger.info(f"Created directory: {directory}")
+        
+        
+        def load_data(input_path):
+            #Load data from CSV or Parquet file#
+            logger.info(f"Loading dataset from: {input_path}")
             
-            if n_features <= 10:
-                return 'none'  # Low dimensional, no reduction needed
-            elif n_features <= 50:
-                return 'pca'  # Medium dimensional, use PCA
-            elif n_features <= 100:
-                return 'pca'  # Use PCA with auto components
-            else:
-                return 'truncated_svd'  # High dimensional, use Truncated SVD (faster)
-        
-        def determine_n_components(X, n_comp_str, variance_threshold, max_comp, method):
-            """Determine optimal number of components"""
-            n_samples, n_features = X.shape
+            ext = Path(input_path).suffix.lower()
             
-            if n_comp_str == 'auto':
-                if method == 'pca':
-                    # Use variance threshold
-                    temp_pca = PCA(n_components=min(n_samples, n_features))
-                    temp_pca.fit(X)
-                    cumsum = np.cumsum(temp_pca.explained_variance_ratio_)
-                    n_comp = int(np.searchsorted(cumsum, variance_threshold) + 1)
-                    n_comp = max(2, min(n_comp, max_comp, n_features))
-                    selection_method = f'variance_threshold_{variance_threshold}'
+            try:
+                if ext in ['.parquet', '.pq']:
+                    df = pd.read_parquet(input_path)
+                    logger.info("Loaded Parquet file")
                 else:
-                    # Use heuristic: sqrt or half of features
-                    n_comp = max(2, min(int(np.sqrt(n_features)), max_comp, n_features))
-                    selection_method = 'sqrt_heuristic'
-            else:
-                try:
-                    n_comp = int(n_comp_str)
-                    n_comp = max(1, min(n_comp, n_features))
-                    selection_method = 'manual'
-                except:
-                    n_comp = max(2, min(int(n_features / 2), max_comp))
-                    selection_method = 'fallback_half'
-            
-            return n_comp, selection_method
-        
-        def apply_pca(X, n_comp):
-            """Apply standard PCA"""
-            pca = PCA(n_components=n_comp, random_state=42)
-            X_reduced = pca.fit_transform(X)
-            
-            explained_var = pca.explained_variance_ratio_
-            cumulative_var = np.cumsum(explained_var)
-            
-            info = {
-                'explained_variance_ratio': explained_var.tolist(),
-                'cumulative_variance_ratio': cumulative_var.tolist(),
-                'total_variance_explained': float(cumulative_var[-1]),
-                'singular_values': pca.singular_values_.tolist() if hasattr(pca, 'singular_values_') else None
-            }
-            
-            return X_reduced, info, pca
-        
-        def apply_kernel_pca(X, n_comp, kernel):
-            """Apply Kernel PCA"""
-            kpca = KernelPCA(n_components=n_comp, kernel=kernel, random_state=42, n_jobs=-1)
-            X_reduced = kpca.fit_transform(X)
-            
-            info = {
-                'kernel': kernel,
-                'explained_variance_ratio': kpca.eigenvalues_.tolist() if hasattr(kpca, 'eigenvalues_') else None
-            }
-            
-            return X_reduced, info, kpca
-        
-        def apply_factor_analysis(X, n_comp):
-            """Apply Factor Analysis"""
-            fa = FactorAnalysis(n_components=n_comp, random_state=42)
-            X_reduced = fa.fit_transform(X)
-            
-            info = {
-                'noise_variance': float(fa.noise_variance_.mean()) if hasattr(fa, 'noise_variance_') else None
-            }
-            
-            return X_reduced, info, fa
-        
-        def apply_truncated_svd(X, n_comp):
-            """Apply Truncated SVD (like PCA but works with sparse data)"""
-            svd = TruncatedSVD(n_components=n_comp, random_state=42)
-            X_reduced = svd.fit_transform(X)
-            
-            explained_var = svd.explained_variance_ratio_
-            cumulative_var = np.cumsum(explained_var)
-            
-            info = {
-                'explained_variance_ratio': explained_var.tolist(),
-                'cumulative_variance_ratio': cumulative_var.tolist(),
-                'total_variance_explained': float(cumulative_var[-1])
-            }
-            
-            return X_reduced, info, svd
-        
-        # Main execution
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--input_data', type=str, required=True)
-        parser.add_argument('--outlier_metadata', type=str)
-        parser.add_argument('--method', type=str, default='auto')
-        parser.add_argument('--n_components', type=str, default='auto')
-        parser.add_argument('--variance_threshold', type=float, default=0.95)
-        parser.add_argument('--max_components', type=int, default=50)
-        parser.add_argument('--kernel', type=str, default='rbf')
-        parser.add_argument('--standardize_before', type=str, default='true')
-        parser.add_argument('--reduced_data', type=str, required=True)
-        parser.add_argument('--reduction_metadata', type=str, required=True)
-        args = parser.parse_args()
-        
-        try:
-            print("=" * 80)
-            print("CLUSTERING PREPROCESSING - COMPONENT 4: DIMENSIONALITY REDUCER")
-            print("=" * 80)
-            
-            # Load data
-            df = pd.read_parquet(args.input_data)
-            print(f"[LOAD] Input shape: {df.shape}")
-            
-            # Extract numeric columns
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-            
-            print(f"[ANALYZE] Numeric columns: {len(numeric_cols)}")
-            print(f"[ANALYZE] Categorical columns: {len(categorical_cols)}")
-            
-            if len(numeric_cols) == 0:
-                print(f"\n[SKIP] No numeric columns, passing through data unchanged")
-                df_out = df.copy()
-                method_used = 'none'
-                reduction_info = {'reason': 'no_numeric_columns'}
-                n_comp = 0
+                    df = pd.read_csv(input_path)
+                    logger.info("Loaded CSV file")
                 
-            else:
-                # Determine method
-                method = args.method.lower()
-                if method == 'auto':
-                    method = select_auto_method(df)
-                    print(f"\n[AUTO] Selected method: {method}")
-                else:
-                    print(f"\n[METHOD] Using: {method}")
+                logger.info(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+                return df
                 
-                if method == 'none':
-                    print(f"\n[SKIP] Dimensionality reduction disabled")
-                    df_out = df.copy()
-                    method_used = 'none'
-                    reduction_info = {'reason': 'disabled'}
-                    n_comp = len(numeric_cols)
-                    
-                else:
-                    # Prepare numeric data
-                    X = df[numeric_cols].values
-                    
-                    # Standardize if requested
-                    standardize = args.standardize_before.lower() in ('true', '1', 'yes', 't')
-                    if standardize:
-                        print(f"\n[STANDARDIZE] Standardizing features before reduction...")
-                        scaler = StandardScaler()
-                        X = scaler.fit_transform(X)
-                    
-                    # Determine n_components
-                    n_comp, selection_method = determine_n_components(
-                        X, args.n_components, args.variance_threshold, 
-                        args.max_components, method
-                    )
-                    
-                    print(f"\n[REDUCE] Reducing from {X.shape[1]} to {n_comp} components")
-                    print(f"  Component selection: {selection_method}")
-                    
-                    # Apply dimensionality reduction
-                    if method == 'pca':
-                        X_reduced, reduction_info, model = apply_pca(X, n_comp)
-                    elif method == 'kernel_pca':
-                        X_reduced, reduction_info, model = apply_kernel_pca(X, n_comp, args.kernel)
-                    elif method == 'factor_analysis':
-                        X_reduced, reduction_info, model = apply_factor_analysis(X, n_comp)
-                    elif method == 'truncated_svd':
-                        X_reduced, reduction_info, model = apply_truncated_svd(X, n_comp)
-                    else:
-                        print(f"  ⚠ Unknown method '{method}', using PCA")
-                        X_reduced, reduction_info, model = apply_pca(X, n_comp)
-                        method = 'pca'
-                    
-                    method_used = method
-                    reduction_info['selection_method'] = selection_method
-                    reduction_info['standardized'] = standardize
-                    
-                    # Create output dataframe
-                    component_names = [f'component_{i+1}' for i in range(X_reduced.shape[1])]
-                    df_reduced = pd.DataFrame(X_reduced, columns=component_names, index=df.index)
-                    
-                    # Add back categorical columns if any
-                    if categorical_cols:
-                        df_out = pd.concat([df_reduced, df[categorical_cols].reset_index(drop=True)], axis=1)
-                        print(f"  Kept {len(categorical_cols)} categorical columns")
-                    else:
-                        df_out = df_reduced
-                    
-                    # Print variance info if available
-                    if 'total_variance_explained' in reduction_info:
-                        print(f"  Total variance explained: {reduction_info['total_variance_explained']*100:.2f}%")
+            except Exception as e:
+                logger.error(f"Error loading data: {str(e)}")
+                raise
+        
+        
+        def determine_n_components(X, method='variance', variance_threshold=0.95, max_components=None):
+            #
+            Automatically determine optimal number of components
             
-            # Save outputs
-            print(f"\n[SAVE] Saving outputs...")
-            ensure_dir(args.reduced_data)
-            ensure_dir(args.reduction_metadata)
+            Parameters:
+            -----------
+            X : np.ndarray
+                Data matrix
+            method : str
+                Selection method: 'variance' or 'kaiser'
+            variance_threshold : float
+                Cumulative variance threshold for 'variance' method
+            max_components : int or None
+                Maximum components to consider
             
-            df_out.to_parquet(args.reduced_data, index=False)
-            print(f"  ✓ Data: {args.reduced_data}")
+            Returns:
+            --------
+            n_components : int
+                Optimal number of components
+            #
+            n_features = X.shape[1]
+            n_samples = X.shape[0]
+            
+            if max_components is None:
+                max_components = min(n_samples, n_features)
+            
+            if method == 'variance':
+                # Fit temporary PCA to determine components
+                pca_temp = PCA(n_components=min(n_samples, n_features))
+                pca_temp.fit(X)
+                
+                cumsum = np.cumsum(pca_temp.explained_variance_ratio_)
+                n_components = int(np.searchsorted(cumsum, variance_threshold) + 1)
+                n_components = min(n_components, max_components)
+                
+                logger.info(
+                    f"Auto-determined {n_components} components "
+                    f"for {variance_threshold*100}% variance"
+                )
+                
+            elif method == 'kaiser':
+                # Kaiser criterion: eigenvalues > 1
+                pca_temp = PCA(n_components=min(n_samples, n_features))
+                pca_temp.fit(X)
+                
+                n_components = int(np.sum(pca_temp.explained_variance_ > 1))
+                n_components = max(1, min(n_components, max_components))
+                
+                logger.info(f"Kaiser criterion: {n_components} components (eigenvalues > 1)")
+            
+            else:
+                # Default fallback
+                n_components = min(max_components, max(1, n_features // 2))
+                logger.info(f"Default heuristic: {n_components} components")
+            
+            return n_components
+        
+        
+        def apply_dimensionality_reduction(X, method, method_params):
+            #
+            Apply dimensionality reduction using specified method
+            
+            Parameters:
+            -----------
+            X : np.ndarray
+                Data matrix (n_samples, n_features)
+            method : str
+                Reduction method name
+            method_params : dict
+                Method-specific parameters
+            
+            Returns:
+            --------
+            X_reduced : np.ndarray
+                Reduced data matrix
+            reducer : object
+                Fitted reducer object
+            metadata : dict
+                Reduction metadata and statistics
+            #
+            logger.info("="*80)
+            logger.info("APPLYING DIMENSIONALITY REDUCTION")
+            logger.info("="*80)
+            logger.info(f"Method: {method}")
+            logger.info(f"Input shape: {X.shape}")
+            
+            if method_params:
+                logger.info(f"Parameters: {method_params}")
+            
+            logger.info("")
+            
+            # Get common parameters
+            n_components = method_params.get('n_components', 'auto')
+            random_state = method_params.get('random_state', 42)
             
             metadata = {
-                'timestamp': datetime.utcnow().isoformat() + 'Z',
-                'component': 'dimensionality_reducer',
-                'method_used': method_used,
-                'n_components': int(n_comp),
-                'reduction_info': reduction_info,
-                'shape_change': {
-                    'before': {'rows': int(df.shape[0]), 'cols': int(df.shape[1]), 'numeric_cols': len(numeric_cols)},
-                    'after': {'rows': int(df_out.shape[0]), 'cols': int(df_out.shape[1])}
-                }
+                'method': method,
+                'params': method_params,
+                'input_shape': list(X.shape)
             }
             
-            with open(args.reduction_metadata, 'w') as f:
-                json.dump(metadata, f, indent=2)
-            print(f"  ✓ Metadata: {args.reduction_metadata}")
+            try:
+                # METHOD 1: PCA (Principal Component Analysis)
+                if method == 'pca':
+                    variance_threshold = method_params.get('variance_threshold', 0.95)
+                    
+                    if n_components == 'auto':
+                        n_components = determine_n_components(
+                            X,
+                            method='variance',
+                            variance_threshold=variance_threshold
+                        )
+                    else:
+                        n_components = min(int(n_components), X.shape[0], X.shape[1])
+                    
+                    reducer = PCA(n_components=n_components, random_state=random_state)
+                    X_reduced = reducer.fit_transform(X)
+                    
+                    metadata['n_components'] = int(n_components)
+                    metadata['explained_variance'] = reducer.explained_variance_.tolist()
+                    metadata['explained_variance_ratio'] = reducer.explained_variance_ratio_.tolist()
+                    metadata['cumulative_variance'] = np.cumsum(
+                        reducer.explained_variance_ratio_
+                    ).tolist()
+                    
+                    logger.info(f"Components: {n_components}")
+                    logger.info(
+                        f"Explained variance: {metadata['cumulative_variance'][-1]*100:.2f}%"
+                    )
+                
+                # METHOD 2: Kernel PCA (Non-linear PCA)
+                elif method == 'kernel_pca':
+                    if n_components == 'auto':
+                        n_components = min(X.shape[1] // 2, 50)
+                    else:
+                        n_components = min(int(n_components), X.shape[0], X.shape[1])
+                    
+                    kernel = method_params.get('kernel', 'rbf')
+                    gamma = method_params.get('gamma', None)
+                    
+                    reducer = KernelPCA(
+                        n_components=n_components,
+                        kernel=kernel,
+                        gamma=gamma,
+                        random_state=random_state,
+                        n_jobs=-1
+                    )
+                    X_reduced = reducer.fit_transform(X)
+                    
+                    metadata['n_components'] = int(n_components)
+                    metadata['kernel'] = kernel
+                    metadata['gamma'] = gamma if gamma is not None else 'auto'
+                    
+                    logger.info(f"Components: {n_components}")
+                    logger.info(f"Kernel: {kernel}")
+                
+                # METHOD 3: ICA (Independent Component Analysis)
+                elif method == 'ica':
+                    if n_components == 'auto':
+                        n_components = min(X.shape[1], X.shape[0])
+                    else:
+                        n_components = min(int(n_components), X.shape[0], X.shape[1])
+                    
+                    max_iter = method_params.get('max_iter', 1000)
+                    
+                    reducer = FastICA(
+                        n_components=n_components,
+                        random_state=random_state,
+                        max_iter=max_iter
+                    )
+                    X_reduced = reducer.fit_transform(X)
+                    
+                    metadata['n_components'] = int(n_components)
+                    metadata['max_iter'] = max_iter
+                    
+                    logger.info(f"Components: {n_components}")
+                    logger.info(f"Max iterations: {max_iter}")
+                
+                # METHOD 4: Factor Analysis
+                elif method == 'factor_analysis':
+                    if n_components == 'auto':
+                        n_components = min(X.shape[1] // 2, X.shape[0])
+                    else:
+                        n_components = min(int(n_components), X.shape[0], X.shape[1])
+                    
+                    max_iter = method_params.get('max_iter', 1000)
+                    
+                    reducer = FactorAnalysis(
+                        n_components=n_components,
+                        random_state=random_state,
+                        max_iter=max_iter
+                    )
+                    X_reduced = reducer.fit_transform(X)
+                    
+                    metadata['n_components'] = int(n_components)
+                    
+                    logger.info(f"Components: {n_components}")
+                
+                # METHOD 5: Sparse PCA
+                elif method == 'sparse_pca':
+                    if n_components == 'auto':
+                        n_components = min(X.shape[1] // 2, X.shape[0])
+                    else:
+                        n_components = min(int(n_components), X.shape[0], X.shape[1])
+                    
+                    alpha = method_params.get('alpha', 1.0)
+                    
+                    reducer = SparsePCA(
+                        n_components=n_components,
+                        alpha=alpha,
+                        random_state=random_state,
+                        n_jobs=-1
+                    )
+                    X_reduced = reducer.fit_transform(X)
+                    
+                    metadata['n_components'] = int(n_components)
+                    metadata['alpha'] = float(alpha)
+                    
+                    logger.info(f"Components: {n_components}")
+                    logger.info(f"Sparsity parameter (alpha): {alpha}")
+                
+                # METHOD 6: t-SNE (for visualization, typically 2-3 components)
+                elif method == 'tsne':
+                    n_components = min(int(method_params.get('n_components', 2)), 3)
+                    perplexity = method_params.get('perplexity', 30.0)
+                    n_iter = method_params.get('n_iter', 1000)
+                    
+                    # Validate perplexity
+                    max_perplexity = (X.shape[0] - 1) / 3.0
+                    if perplexity > max_perplexity:
+                        logger.warning(
+                            f"Perplexity {perplexity} too large for {X.shape[0]} samples. "
+                            f"Reducing to {max_perplexity:.1f}"
+                        )
+                        perplexity = max_perplexity
+                    
+                    reducer = TSNE(
+                        n_components=n_components,
+                        perplexity=perplexity,
+                        n_iter=n_iter,
+                        random_state=random_state,
+                        n_jobs=-1
+                    )
+                    X_reduced = reducer.fit_transform(X)
+                    
+                    metadata['n_components'] = int(n_components)
+                    metadata['perplexity'] = float(perplexity)
+                    metadata['n_iter'] = int(n_iter)
+                    
+                    logger.info(f"Components: {n_components}")
+                    logger.info(f"Perplexity: {perplexity}")
+                    logger.info(f"Iterations: {n_iter}")
+                
+                # METHOD 7: Isomap (non-linear, manifold learning)
+                elif method == 'isomap':
+                    n_components = int(method_params.get('n_components', 2))
+                    n_neighbors = method_params.get('n_neighbors', 5)
+                    
+                    # Validate n_neighbors
+                    if n_neighbors >= X.shape[0]:
+                        n_neighbors = max(2, X.shape[0] - 1)
+                        logger.warning(f"Reduced n_neighbors to {n_neighbors}")
+                    
+                    reducer = Isomap(
+                        n_components=n_components,
+                        n_neighbors=n_neighbors,
+                        n_jobs=-1
+                    )
+                    X_reduced = reducer.fit_transform(X)
+                    
+                    metadata['n_components'] = int(n_components)
+                    metadata['n_neighbors'] = int(n_neighbors)
+                    
+                    logger.info(f"Components: {n_components}")
+                    logger.info(f"Neighbors: {n_neighbors}")
+                
+                # METHOD 8: LLE (Locally Linear Embedding)
+                elif method == 'lle':
+                    n_components = int(method_params.get('n_components', 2))
+                    n_neighbors = method_params.get('n_neighbors', 5)
+                    
+                    # Validate n_neighbors
+                    if n_neighbors >= X.shape[0]:
+                        n_neighbors = max(2, X.shape[0] - 1)
+                        logger.warning(f"Reduced n_neighbors to {n_neighbors}")
+                    
+                    reducer = LocallyLinearEmbedding(
+                        n_components=n_components,
+                        n_neighbors=n_neighbors,
+                        random_state=random_state,
+                        n_jobs=-1
+                    )
+                    X_reduced = reducer.fit_transform(X)
+                    
+                    metadata['n_components'] = int(n_components)
+                    metadata['n_neighbors'] = int(n_neighbors)
+                    
+                    logger.info(f"Components: {n_components}")
+                    logger.info(f"Neighbors: {n_neighbors}")
+                
+                # METHOD 9: MDS (Multidimensional Scaling)
+                elif method == 'mds':
+                    n_components = int(method_params.get('n_components', 2))
+                    
+                    reducer = MDS(
+                        n_components=n_components,
+                        random_state=random_state,
+                        n_jobs=-1
+                    )
+                    X_reduced = reducer.fit_transform(X)
+                    
+                    metadata['n_components'] = int(n_components)
+                    
+                    logger.info(f"Components: {n_components}")
+                
+                else:
+                    raise ValueError(
+                        f"Unknown dimensionality reduction method: {method}. "
+                        f"Available: pca, kernel_pca, ica, factor_analysis, sparse_pca, "
+                        f"tsne, isomap, lle, mds"
+                    )
+                
+                # Calculate reduction statistics
+                metadata['output_shape'] = list(X_reduced.shape)
+                metadata['reduction_ratio'] = float(X_reduced.shape[1] / X.shape[1])
+                metadata['features_removed'] = int(X.shape[1] - X_reduced.shape[1])
+                
+                logger.info("")
+                logger.info(f"Output shape: {X_reduced.shape}")
+                logger.info(f"Reduction: {X.shape[1]} → {X_reduced.shape[1]} features")
+                logger.info(f"Features removed: {metadata['features_removed']}")
+                logger.info("")
+                
+                return X_reduced, reducer, metadata
+                
+            except Exception as e:
+                logger.error(f"Error in dimensionality reduction: {str(e)}")
+                raise
+        
+        
+        def main():
+            parser = argparse.ArgumentParser(
+                description="Generic Dimensionality Reduction Component"
+            )
+            parser.add_argument("--input_data", required=True,
+                               help="Path to input dataset")
+            parser.add_argument("--method", default='pca',
+                               help="Dimensionality reduction method")
+            parser.add_argument("--method_params", type=str, default='{}',
+                               help="Method-specific parameters as JSON")
+            parser.add_argument("--output_output_data", required=True,
+                               help="Output path for reduced dataset")
+            parser.add_argument("--output_reducer", required=True,
+                               help="Output path for fitted reducer")
+            parser.add_argument("--output_metadata", required=True,
+                               help="Output path for reduction metadata")
             
-            print("\n" + "=" * 80)
-            print("COMPONENT 4 COMPLETE")
-            print("=" * 80)
-            print(f"Method: {method_used}")
-            print(f"Dimensions: {df.shape[1]} → {df_out.shape[1]} columns")
-            print(f"Final shape: {df_out.shape[0]} rows × {df_out.shape[1]} columns")
-            print("=" * 80 + "\n")
+            args = parser.parse_args()
             
-        except Exception as e:
-            print(f"\n[ERROR] {str(e)}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
-            sys.exit(1)
-    
+            logger.info("="*80)
+            logger.info("DIMENSIONALITY REDUCTION COMPONENT")
+            logger.info("="*80)
+            logger.info(f"Input: {args.input_data}")
+            logger.info(f"Method: {args.method}")
+            logger.info("")
+            
+            try:
+                # Ensure output directories
+                ensure_directory_exists(args.output_output_data)
+                ensure_directory_exists(args.output_reducer)
+                ensure_directory_exists(args.output_metadata)
+                
+                # Parse method parameters
+                try:
+                    method_params = json.loads(args.method_params)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON in method_params: {e}")
+                    logger.error(f"Received: {args.method_params}")
+                    logger.error("Expected format: '{\"param\": value}' (use double quotes)")
+                    sys.exit(1)
+                
+                # Load data
+                df = load_data(args.input_data)
+                
+                if df.empty:
+                    logger.error("ERROR: Dataset is empty")
+                    sys.exit(1)
+                
+                # Extract numeric columns only
+                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                non_numeric_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+                
+                logger.info(f"Numeric columns: {len(numeric_cols)}")
+                logger.info(f"Non-numeric columns: {len(non_numeric_cols)}")
+                
+                if len(numeric_cols) == 0:
+                    logger.error("ERROR: No numeric columns found for dimensionality reduction")
+                    sys.exit(1)
+                
+                logger.info(f"Using {len(numeric_cols)} numeric columns for reduction")
+                logger.info("")
+                
+                X = df[numeric_cols].values
+                
+                # Apply dimensionality reduction
+                X_reduced, reducer, metadata = apply_dimensionality_reduction(
+                    X=X,
+                    method=args.method,
+                    method_params=method_params
+                )
+                
+                # Create DataFrame with reduced features
+                n_comp = X_reduced.shape[1]
+                component_names = [f"Component_{i+1}" for i in range(n_comp)]
+                df_reduced = pd.DataFrame(X_reduced, columns=component_names)
+                
+                # Add back non-numeric columns if any
+                if len(non_numeric_cols) > 0:
+                    for col in non_numeric_cols:
+                        df_reduced[col] = df[col].values
+                    logger.info(f"Preserved {len(non_numeric_cols)} non-numeric columns")
+                
+                # Save reduced data
+                df_reduced.to_csv(args.output_output_data, index=False)
+                logger.info(f"Reduced data saved: {args.output_output_data}")
+                
+                # Save reducer
+                with open(args.output_reducer, 'wb') as f:
+                    pickle.dump(reducer, f)
+                logger.info(f"Reducer saved: {args.output_reducer}")
+                
+                # Add column information to metadata
+                metadata['original_columns'] = numeric_cols
+                metadata['component_names'] = component_names
+                metadata['non_numeric_columns'] = non_numeric_cols
+                metadata['total_output_columns'] = len(component_names) + len(non_numeric_cols)
+                
+                # Save metadata
+                with open(args.output_metadata, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+                logger.info(f"Metadata saved: {args.output_metadata}")
+                
+                logger.info("")
+                logger.info("="*80)
+                logger.info("DIMENSIONALITY REDUCTION COMPLETED")
+                logger.info("="*80)
+                logger.info(f"Method: {args.method}")
+                logger.info(f"Original dimensions: {X.shape[1]}")
+                logger.info(f"Reduced dimensions: {X_reduced.shape[1]}")
+                logger.info(f"Reduction ratio: {metadata['reduction_ratio']:.2%}")
+                
+                if 'cumulative_variance' in metadata:
+                    logger.info(
+                        f"Variance retained: {metadata['cumulative_variance'][-1]*100:.2f}%"
+                    )
+                
+                logger.info(f"Final dataset: {df_reduced.shape[0]} rows x {df_reduced.shape[1]} columns")
+                logger.info("="*80)
+                
+            except ValueError as e:
+                logger.error(f"VALIDATION ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+            except Exception as e:
+                logger.error(f"ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+        
+        
+        if __name__ == "__main__":
+            main()
     args:
       - --input_data
       - {inputPath: input_data}
-      - --outlier_metadata
-      - {inputPath: outlier_metadata}
       - --method
       - {inputValue: method}
-      - --n_components
-      - {inputValue: n_components}
-      - --variance_threshold
-      - {inputValue: variance_threshold}
-      - --max_components
-      - {inputValue: max_components}
-      - --kernel
-      - {inputValue: kernel}
-      - --standardize_before
-      - {inputValue: standardize_before}
-      - --reduced_data
-      - {outputPath: reduced_data}
-      - --reduction_metadata
-      - {outputPath: reduction_metadata}
+      - --method_params
+      - {inputValue: method_params}
+      - --output_output_data
+      - {outputPath: output_data}
+      - --output_reducer
+      - {outputPath: reducer}
+      - --output_metadata
+      - {outputPath: metadata}
