@@ -1,386 +1,531 @@
-name: Missing Values Handler v1.0
-description: |
-  Handles missing values for clustering preprocessing.
-  Implements multiple strategies from the generic framework:
-  - Deletion (listwise, pairwise)
-  - Imputation (mean, median, mode, regression, kNN, iterative)
-  - Hot-deck methods
-  
-  Based on section 3.1 of the clustering preprocessing framework.
+name: Generic Missing Values Handler Component
+description: Comprehensive missing value handling for clustering with 10 imputation strategies. Supports method-specific parameters via JSON. Methods include drop, mean, median, mode, constant, KNN, iterative, forward/backward fill.
 
 inputs:
-  - {name: input_data, type: Dataset, description: 'Input dataset from loader'}
-  - {name: load_metadata, type: Data, description: 'Metadata from loader (optional passthrough)', optional: true}
-  - {name: strategy, type: String, default: "auto", description: 'Strategy: auto, delete_rows, mean, median, mode, knn, iterative, constant'}
-  - {name: missing_threshold_cols, type: Float, default: "0.5", description: 'Drop columns with > this fraction missing'}
-  - {name: missing_threshold_rows, type: Float, default: "0.9", description: 'Drop rows with > this fraction missing'}
-  # Algorithm-specific parameters (only used if that strategy is selected)
-  - {name: knn_neighbors, type: Integer, default: "5", optional: true, description: '[KNN only] Number of neighbors for KNN imputation'}
-  - {name: iterative_max_iter, type: Integer, default: "10", optional: true, description: '[Iterative only] Max iterations for iterative imputation'}
-  - {name: constant_fill_numeric, type: Float, default: "0.0", optional: true, description: '[Constant only] Fill value for numeric columns'}
-  - {name: constant_fill_categorical, type: String, default: "MISSING", optional: true, description: '[Constant only] Fill value for categorical columns'}
-  - {name: max_rows_for_knn, type: Integer, default: "10000", optional: true, description: '[KNN only] Max rows for KNN (memory limit, auto-fallback to iterative if exceeded)'}
+  - name: input_data
+    type: Data
+    description: 'Input dataset with potential missing values (CSV or Parquet)'
+  - name: method
+    type: String
+    description: 'Imputation method: drop_rows, drop_cols, mean, median, mode, constant, zero, knn, iterative, forward_fill, backward_fill'
+    default: 'mean'
+  - name: method_params
+    type: String
+    description: 'Method-specific parameters as JSON string. Examples: {"n_neighbors":5}, {"drop_threshold":0.5}, {"fill_value":0}'
+    default: '{}'
 
 outputs:
-  - {name: imputed_data, type: Dataset, description: 'Data with missing values handled'}
-  - {name: missing_metadata, type: Data, description: 'Missing values handling metadata'}
+  - name: output_data
+    type: Data
+    description: 'Dataset with missing values handled (CSV format)'
+  - name: imputer
+    type: Model
+    description: 'Fitted imputer object for consistency with test data (PKL format)'
+  - name: report
+    type: Data
+    description: 'Comprehensive imputation report and statistics (JSON format)'
 
 implementation:
   container:
-    image: python:3.9-slim
+    image: nikhilv215/nesy-factory:v23
     command:
       - python3
       - -u
       - -c
       - |
-        import os, sys, json, argparse
-        import subprocess
-        
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
-                       "pandas", "numpy", "pyarrow", "scikit-learn"], check=True)
-        
+        import os
+        import sys
+        import json
+        import argparse
+        import logging
+        import pickle
         import pandas as pd
         import numpy as np
-        from datetime import datetime
         from sklearn.impute import SimpleImputer, KNNImputer
         from sklearn.experimental import enable_iterative_imputer
         from sklearn.impute import IterativeImputer
+        from pathlib import Path
         
-        def ensure_dir(path):
-            d = os.path.dirname(path)
-            if d and not os.path.exists(d):
-                os.makedirs(d, exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger = logging.getLogger('missing_values_handler')
         
-        def analyze_missing(df):
-            """Analyze missing value patterns"""
-            total_cells = df.shape[0] * df.shape[1]
-            missing_cells = df.isnull().sum().sum()
-            missing_pct = (missing_cells / total_cells * 100) if total_cells > 0 else 0
+        
+        def ensure_directory_exists(file_path):
+            """Create directory if it doesn't exist"""
+            directory = os.path.dirname(file_path)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
+                logger.info(f"Created directory: {directory}")
+        
+        
+        def load_data(input_path):
+            """Load data from CSV or Parquet file"""
+            logger.info(f"Loading dataset from: {input_path}")
             
-            missing_by_col = {}
+            ext = Path(input_path).suffix.lower()
+            
+            try:
+                if ext in ['.parquet', '.pq']:
+                    df = pd.read_parquet(input_path)
+                    logger.info("Loaded Parquet file")
+                else:
+                    df = pd.read_csv(input_path)
+                    logger.info("Loaded CSV file")
+                
+                logger.info(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+                return df
+                
+            except Exception as e:
+                logger.error(f"Error loading data: {str(e)}")
+                raise
+        
+        
+        def analyze_missing_patterns(df):
+            """
+            Analyze missing value patterns in dataset
+            
+            Returns:
+            --------
+            dict : Missing value statistics
+            """
+            logger.info("="*80)
+            logger.info("ANALYZING MISSING VALUE PATTERNS")
+            logger.info("="*80)
+            
+            total_missing = df.isnull().sum().sum()
+            total_values = df.shape[0] * df.shape[1]
+            missing_pct = (total_missing / total_values) * 100 if total_values > 0 else 0
+            
+            missing_info = {
+                'total_missing': int(total_missing),
+                'total_values': int(total_values),
+                'missing_percentage': float(missing_pct),
+                'columns_with_missing': {},
+                'rows_with_missing': int(df.isnull().any(axis=1).sum()),
+                'rows_with_missing_pct': float(df.isnull().any(axis=1).sum() / len(df) * 100) if len(df) > 0 else 0
+            }
+            
+            # Per-column analysis
+            cols_with_missing = []
             for col in df.columns:
                 miss_count = df[col].isnull().sum()
                 if miss_count > 0:
-                    missing_by_col[col] = {
+                    missing_info['columns_with_missing'][col] = {
                         'count': int(miss_count),
-                        'percentage': float(miss_count / len(df) * 100)
+                        'percentage': float(miss_count / len(df) * 100),
+                        'dtype': str(df[col].dtype)
                     }
+                    cols_with_missing.append(col)
+                    logger.info(f"  {col}: {miss_count} missing ({miss_count/len(df)*100:.1f}%)")
             
-            missing_by_row = df.isnull().sum(axis=1)
-            rows_with_missing = (missing_by_row > 0).sum()
+            if total_missing == 0:
+                logger.info("✓ No missing values found")
+            else:
+                logger.info("")
+                logger.info(f"Total missing values: {total_missing} ({missing_pct:.2f}%)")
+                logger.info(f"Columns with missing: {len(cols_with_missing)}")
+                logger.info(f"Rows with missing: {missing_info['rows_with_missing']} ({missing_info['rows_with_missing_pct']:.1f}%)")
             
-            return {
-                'total_missing': int(missing_cells),
-                'percentage': float(missing_pct),
-                'by_column': missing_by_col,
-                'rows_with_missing': int(rows_with_missing),
-                'rows_with_missing_pct': float(rows_with_missing / len(df) * 100) if len(df) > 0 else 0
+            logger.info("")
+            return missing_info
+        
+        
+        def handle_missing_values(df, method, method_params):
+            """
+            Handle missing values using specified strategy
+            
+            Parameters:
+            -----------
+            df : pd.DataFrame
+                Input dataset
+            method : str
+                Strategy: 'drop_rows', 'drop_cols', 'mean', 'median', 'mode', 
+                          'constant', 'knn', 'iterative', 'forward_fill', 'backward_fill'
+            method_params : dict
+                Method-specific parameters
+            
+            Returns:
+            --------
+            df_imputed : pd.DataFrame
+                Dataset with missing values handled
+            imputer : object or None
+                Fitted imputer object
+            stats : dict
+                Imputation statistics
+            """
+            logger.info("="*80)
+            logger.info("HANDLING MISSING VALUES")
+            logger.info("="*80)
+            logger.info(f"Method: {method}")
+            
+            if method_params:
+                logger.info(f"Parameters: {method_params}")
+            
+            logger.info("")
+            
+            initial_shape = df.shape
+            initial_missing = df.isnull().sum().sum()
+            
+            df_imputed = df.copy()
+            imputer = None
+            dropped_columns = []
+            dropped_rows = 0
+            
+            stats = {
+                'method': method,
+                'method_params': method_params,
+                'initial_missing': int(initial_missing),
+                'initial_shape': list(initial_shape),
+                'dropped_columns': [],
+                'dropped_rows': 0,
+                'final_missing': 0,
+                'final_shape': [],
+                'imputation_success': False
             }
-        
-        def delete_high_missing_cols(df, threshold):
-            """Delete columns with high proportion of missing values"""
-            before_cols = df.shape[1]
-            missing_frac = df.isnull().sum() / len(df)
-            cols_to_keep = missing_frac[missing_frac <= threshold].index
-            df_out = df[cols_to_keep].copy()
-            removed_cols = list(set(df.columns) - set(cols_to_keep))
             
-            print(f"  Removed {len(removed_cols)} columns with >{threshold*100}% missing")
-            if removed_cols:
-                print(f"    Columns: {removed_cols[:10]}{'...' if len(removed_cols) > 10 else ''}")
+            # METHOD 1: Drop rows with missing values
+            if method == 'drop_rows':
+                before = len(df_imputed)
+                df_imputed = df_imputed.dropna()
+                dropped_rows = before - len(df_imputed)
+                logger.info(f"Dropped {dropped_rows} rows with missing values")
+                logger.info(f"Remaining rows: {len(df_imputed)}")
+                stats['dropped_rows'] = dropped_rows
             
-            return df_out, removed_cols
-        
-        def delete_high_missing_rows(df, threshold):
-            """Delete rows with high proportion of missing values"""
-            before_rows = len(df)
-            missing_frac = df.isnull().sum(axis=1) / df.shape[1]
-            rows_to_keep = missing_frac <= threshold
-            df_out = df[rows_to_keep].copy().reset_index(drop=True)
-            removed = before_rows - len(df_out)
-            
-            print(f"  Removed {removed} rows with >{threshold*100}% missing")
-            
-            return df_out, removed
-        
-        def impute_simple(df, strategy='mean'):
-            """Simple imputation: mean, median, mode, constant"""
-            df = df.copy()
-            
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-            
-            imputed_cols = []
-            
-            # Handle numeric columns
-            if numeric_cols:
-                if strategy == 'mean':
-                    imp = SimpleImputer(strategy='mean')
-                elif strategy == 'median':
-                    imp = SimpleImputer(strategy='median')
-                elif strategy == 'constant':
-                    imp = SimpleImputer(strategy='constant', fill_value=args.constant_fill_numeric)
-                else:
-                    imp = SimpleImputer(strategy='mean')
+            # METHOD 2: Drop columns exceeding threshold
+            elif method == 'drop_cols':
+                drop_threshold = method_params.get('drop_threshold', 0.5)
+                logger.info(f"Drop threshold: {drop_threshold*100}%")
                 
-                for col in numeric_cols:
-                    if df[col].isnull().any():
-                        df[col] = imp.fit_transform(df[[col]]).ravel()
-                        imputed_cols.append(col)
-            
-            # Handle categorical columns
-            if categorical_cols:
-                if strategy == 'mode':
-                    imp = SimpleImputer(strategy='most_frequent')
-                elif strategy == 'constant':
-                    imp = SimpleImputer(strategy='constant', fill_value=args.constant_fill_categorical)
-                else:
-                    imp = SimpleImputer(strategy='most_frequent')
+                missing_pct = df_imputed.isnull().sum() / len(df_imputed)
+                cols_to_drop = missing_pct[missing_pct > drop_threshold].index.tolist()
                 
-                for col in categorical_cols:
-                    if df[col].isnull().any():
-                        df[col] = imp.fit_transform(df[[col]].astype(str)).ravel()
-                        imputed_cols.append(col)
-            
-            print(f"  Imputed {len(imputed_cols)} columns using {strategy} strategy")
-            
-            return df, imputed_cols
-        
-        def impute_knn(df, n_neighbors=5):
-            """KNN imputation for numeric columns"""
-            df = df.copy()
-            
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-            
-            imputed_cols = []
-            
-            # KNN only works on numeric data
-            if numeric_cols and df[numeric_cols].isnull().any().any():
-                imputer = KNNImputer(n_neighbors=n_neighbors)
-                df[numeric_cols] = imputer.fit_transform(df[numeric_cols])
-                imputed_cols = numeric_cols
-                print(f"  KNN imputation on {len(numeric_cols)} numeric columns (k={n_neighbors})")
-            
-            # Fill categorical with mode
-            if categorical_cols:
-                for col in categorical_cols:
-                    if df[col].isnull().any():
-                        mode_val = df[col].mode()[0] if not df[col].mode().empty else 'MISSING'
-                        df[col].fillna(mode_val, inplace=True)
-                        imputed_cols.append(col)
-                print(f"  Mode imputation on {len(categorical_cols)} categorical columns")
-            
-            return df, imputed_cols
-        
-        def impute_iterative(df, max_iter=10):
-            """Iterative imputation (MICE-like) for numeric columns"""
-            df = df.copy()
-            
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-            
-            imputed_cols = []
-            
-            # Iterative only on numeric
-            if numeric_cols and df[numeric_cols].isnull().any().any():
-                imputer = IterativeImputer(max_iter=max_iter, random_state=42)
-                df[numeric_cols] = imputer.fit_transform(df[numeric_cols])
-                imputed_cols = numeric_cols
-                print(f"  Iterative imputation on {len(numeric_cols)} numeric columns (max_iter={max_iter})")
-            
-            # Fill categorical with mode
-            if categorical_cols:
-                for col in categorical_cols:
-                    if df[col].isnull().any():
-                        mode_val = df[col].mode()[0] if not df[col].mode().empty else 'MISSING'
-                        df[col].fillna(mode_val, inplace=True)
-                        imputed_cols.append(col)
-                print(f"  Mode imputation on {len(categorical_cols)} categorical columns")
-            
-            return df, imputed_cols
-        
-        def select_auto_strategy(df, max_rows_knn):
-            """Automatically select best strategy based on data characteristics"""
-            missing_analysis = analyze_missing(df)
-            missing_pct = missing_analysis['percentage']
-            n_rows = len(df)
-            
-            # Decision logic based on paper recommendations
-            if missing_pct == 0:
-                return 'none'
-            elif missing_pct < 1:
-                return 'delete_rows'  # Very few missing, just remove
-            elif missing_pct < 5:
-                return 'mean'  # Low missing, simple imputation
-            elif missing_pct < 20:
-                if n_rows <= max_rows_knn:
-                    return 'knn'  # Medium missing, KNN if feasible
+                if cols_to_drop:
+                    df_imputed = df_imputed.drop(columns=cols_to_drop)
+                    dropped_columns = cols_to_drop
+                    logger.info(f"Dropped {len(cols_to_drop)} columns:")
+                    for col in cols_to_drop:
+                        logger.info(f"  - {col} ({missing_pct[col]*100:.1f}% missing)")
+                    stats['dropped_columns'] = cols_to_drop
                 else:
-                    return 'iterative'  # Too many rows for KNN
+                    logger.info(f"No columns exceed {drop_threshold*100}% missing threshold")
+            
+            # METHOD 3: Mean imputation (numeric only)
+            elif method == 'mean':
+                numeric_cols = df_imputed.select_dtypes(include=[np.number]).columns.tolist()
+                cat_cols = df_imputed.select_dtypes(exclude=[np.number]).columns.tolist()
+                
+                if len(numeric_cols) > 0:
+                    imputer = SimpleImputer(strategy='mean')
+                    df_imputed[numeric_cols] = imputer.fit_transform(df_imputed[numeric_cols])
+                    logger.info(f"Mean imputation applied to {len(numeric_cols)} numeric columns")
+                
+                if len(cat_cols) > 0:
+                    cat_imputer = SimpleImputer(strategy='most_frequent')
+                    df_imputed[cat_cols] = cat_imputer.fit_transform(df_imputed[cat_cols])
+                    logger.info(f"Mode imputation applied to {len(cat_cols)} categorical columns")
+            
+            # METHOD 4: Median imputation (numeric only)
+            elif method == 'median':
+                numeric_cols = df_imputed.select_dtypes(include=[np.number]).columns.tolist()
+                cat_cols = df_imputed.select_dtypes(exclude=[np.number]).columns.tolist()
+                
+                if len(numeric_cols) > 0:
+                    imputer = SimpleImputer(strategy='median')
+                    df_imputed[numeric_cols] = imputer.fit_transform(df_imputed[numeric_cols])
+                    logger.info(f"Median imputation applied to {len(numeric_cols)} numeric columns")
+                
+                if len(cat_cols) > 0:
+                    cat_imputer = SimpleImputer(strategy='most_frequent')
+                    df_imputed[cat_cols] = cat_imputer.fit_transform(df_imputed[cat_cols])
+                    logger.info(f"Mode imputation applied to {len(cat_cols)} categorical columns")
+            
+            # METHOD 5: Mode imputation (all columns)
+            elif method == 'mode':
+                imputer = SimpleImputer(strategy='most_frequent')
+                df_imputed_values = imputer.fit_transform(df_imputed)
+                df_imputed = pd.DataFrame(
+                    df_imputed_values,
+                    columns=df_imputed.columns,
+                    index=df_imputed.index
+                )
+                logger.info(f"Mode imputation applied to all {len(df_imputed.columns)} columns")
+            
+            # METHOD 6: Constant value (with customizable fill_value)
+            elif method in ['constant', 'zero']:
+                fill_value = method_params.get('fill_value', 0)
+                df_imputed = df_imputed.fillna(fill_value)
+                logger.info(f"Filled missing values with constant: {fill_value}")
+                stats['method_params']['fill_value'] = fill_value
+            
+            # METHOD 7: KNN imputation (numeric only, with parameters)
+            elif method == 'knn':
+                n_neighbors = method_params.get('n_neighbors', 5)
+                weights = method_params.get('weights', 'uniform')
+                
+                numeric_cols = df_imputed.select_dtypes(include=[np.number]).columns.tolist()
+                cat_cols = df_imputed.select_dtypes(exclude=[np.number]).columns.tolist()
+                
+                if len(numeric_cols) > 0:
+                    imputer = KNNImputer(n_neighbors=n_neighbors, weights=weights)
+                    df_imputed[numeric_cols] = imputer.fit_transform(df_imputed[numeric_cols])
+                    logger.info(f"KNN imputation (k={n_neighbors}, weights={weights})")
+                    logger.info(f"  Applied to {len(numeric_cols)} numeric columns")
+                    stats['method_params'] = {'n_neighbors': n_neighbors, 'weights': weights}
+                
+                if len(cat_cols) > 0:
+                    cat_imputer = SimpleImputer(strategy='most_frequent')
+                    df_imputed[cat_cols] = cat_imputer.fit_transform(df_imputed[cat_cols])
+                    logger.info(f"  Mode imputation for {len(cat_cols)} categorical columns")
+            
+            # METHOD 8: Iterative imputation (numeric only, with parameters)
+            elif method == 'iterative':
+                max_iter = method_params.get('max_iter', 10)
+                random_state = method_params.get('random_state', 42)
+                
+                numeric_cols = df_imputed.select_dtypes(include=[np.number]).columns.tolist()
+                cat_cols = df_imputed.select_dtypes(exclude=[np.number]).columns.tolist()
+                
+                if len(numeric_cols) > 0:
+                    imputer = IterativeImputer(
+                        max_iter=max_iter,
+                        random_state=random_state,
+                        verbose=0
+                    )
+                    df_imputed[numeric_cols] = imputer.fit_transform(df_imputed[numeric_cols])
+                    logger.info(f"Iterative imputation (max_iter={max_iter})")
+                    logger.info(f"  Applied to {len(numeric_cols)} numeric columns")
+                    stats['method_params'] = {'max_iter': max_iter, 'random_state': random_state}
+                
+                if len(cat_cols) > 0:
+                    cat_imputer = SimpleImputer(strategy='most_frequent')
+                    df_imputed[cat_cols] = cat_imputer.fit_transform(df_imputed[cat_cols])
+                    logger.info(f"  Mode imputation for {len(cat_cols)} categorical columns")
+            
+            # METHOD 9: Forward fill
+            elif method in ['forward_fill', 'ffill']:
+                df_imputed = df_imputed.fillna(method='ffill')
+                # Backward fill any remaining NaNs at the start
+                remaining = df_imputed.isnull().sum().sum()
+                if remaining > 0:
+                    df_imputed = df_imputed.fillna(method='bfill')
+                    logger.info("Forward fill applied (with backward fill for leading NaNs)")
+                else:
+                    logger.info("Forward fill applied")
+            
+            # METHOD 10: Backward fill
+            elif method in ['backward_fill', 'bfill']:
+                df_imputed = df_imputed.fillna(method='bfill')
+                # Forward fill any remaining NaNs at the end
+                remaining = df_imputed.isnull().sum().sum()
+                if remaining > 0:
+                    df_imputed = df_imputed.fillna(method='ffill')
+                    logger.info("Backward fill applied (with forward fill for trailing NaNs)")
+                else:
+                    logger.info("Backward fill applied")
+            
             else:
-                return 'median'  # High missing, robust imputation
-        
-        # Main execution
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--input_data', type=str, required=True)
-        parser.add_argument('--load_metadata', type=str)
-        parser.add_argument('--strategy', type=str, default='auto')
-        parser.add_argument('--missing_threshold_cols', type=float, default=0.5)
-        parser.add_argument('--missing_threshold_rows', type=float, default=0.9)
-        parser.add_argument('--knn_neighbors', type=int, default=5)
-        parser.add_argument('--iterative_max_iter', type=int, default=10)
-        parser.add_argument('--constant_fill_numeric', type=float, default=0.0)
-        parser.add_argument('--constant_fill_categorical', type=str, default='MISSING')
-        parser.add_argument('--max_rows_for_knn', type=int, default=10000)
-        parser.add_argument('--imputed_data', type=str, required=True)
-        parser.add_argument('--missing_metadata', type=str, required=True)
-        args = parser.parse_args()
-        
-        try:
-            print("=" * 80)
-            print("CLUSTERING PREPROCESSING - COMPONENT 2: MISSING VALUES HANDLER")
-            print("=" * 80)
+                raise ValueError(
+                    f"Unknown missing value method: {method}. "
+                    f"Available: drop_rows, drop_cols, mean, median, mode, constant, "
+                    f"knn, iterative, forward_fill, backward_fill"
+                )
             
-            # Load data
-            df = pd.read_parquet(args.input_data)
-            print(f"[LOAD] Input shape: {df.shape}")
+            # Update statistics
+            final_missing = df_imputed.isnull().sum().sum()
+            stats['final_missing'] = int(final_missing)
+            stats['final_shape'] = list(df_imputed.shape)
+            stats['imputation_success'] = bool(final_missing == 0)
             
-            # Analyze initial missing
-            print(f"\n[ANALYZE] Initial missing value analysis:")
-            initial_missing = analyze_missing(df)
-            print(f"  Total missing: {initial_missing['total_missing']} ({initial_missing['percentage']:.2f}%)")
-            print(f"  Rows affected: {initial_missing['rows_with_missing']} ({initial_missing['rows_with_missing_pct']:.1f}%)")
-            print(f"  Columns affected: {len(initial_missing['by_column'])}")
-            
-            if initial_missing['total_missing'] == 0:
-                print(f"\n[SKIP] No missing values detected, passing through data unchanged")
-                df_out = df.copy()
-                strategy_used = 'none'
-                actions = ['No action needed - data is complete']
+            # Calculate reduction
+            if initial_missing > 0:
+                reduction_pct = ((initial_missing - final_missing) / initial_missing) * 100
+                stats['missing_reduction_pct'] = float(reduction_pct)
             else:
-                # Determine strategy
-                strategy = args.strategy.lower()
-                if strategy == 'auto':
-                    strategy = select_auto_strategy(df, args.max_rows_for_knn)
-                    print(f"\n[AUTO] Selected strategy: {strategy}")
-                else:
-                    print(f"\n[STRATEGY] Using: {strategy}")
-                
-                strategy_used = strategy
-                actions = []
-                
-                # Step 1: Remove high-missing columns
-                print(f"\n[STEP 1] Removing columns with >{args.missing_threshold_cols*100}% missing:")
-                df, removed_cols = delete_high_missing_cols(df, args.missing_threshold_cols)
-                if removed_cols:
-                    actions.append(f"Removed {len(removed_cols)} high-missing columns")
-                
-                # Step 2: Remove high-missing rows
-                print(f"\n[STEP 2] Removing rows with >{args.missing_threshold_rows*100}% missing:")
-                df, removed_rows = delete_high_missing_rows(df, args.missing_threshold_rows)
-                if removed_rows > 0:
-                    actions.append(f"Removed {removed_rows} high-missing rows")
-                
-                # Step 3: Impute remaining missing values
-                print(f"\n[STEP 3] Imputing remaining missing values:")
-                
-                if strategy == 'delete_rows':
-                    before = len(df)
-                    df_out = df.dropna().reset_index(drop=True)
-                    actions.append(f"Deleted {before - len(df_out)} rows with any missing")
-                    imputed_cols = []
-                
-                elif strategy in ['mean', 'median', 'mode', 'constant']:
-                    df_out, imputed_cols = impute_simple(df, strategy)
-                    actions.append(f"{strategy.capitalize()} imputation on {len(imputed_cols)} columns")
-                
-                elif strategy == 'knn':
-                    if len(df) > args.max_rows_for_knn:
-                        print(f"  ⚠ Dataset too large for KNN ({len(df)} > {args.max_rows_for_knn}), using iterative instead")
-                        df_out, imputed_cols = impute_iterative(df, args.iterative_max_iter)
-                        strategy_used = 'iterative'
-                        actions.append(f"Iterative imputation (fallback from KNN)")
-                    else:
-                        df_out, imputed_cols = impute_knn(df, args.knn_neighbors)
-                        actions.append(f"KNN imputation (k={args.knn_neighbors})")
-                
-                elif strategy == 'iterative':
-                    df_out, imputed_cols = impute_iterative(df, args.iterative_max_iter)
-                    actions.append(f"Iterative imputation (max_iter={args.iterative_max_iter})")
-                
-                else:
-                    # Fallback to median
-                    print(f"  ⚠ Unknown strategy '{strategy}', using median")
-                    df_out, imputed_cols = impute_simple(df, 'median')
-                    strategy_used = 'median'
-                    actions.append("Median imputation (fallback)")
+                stats['missing_reduction_pct'] = 0.0
             
-            # Final analysis
-            print(f"\n[ANALYZE] Final missing value analysis:")
-            final_missing = analyze_missing(df_out)
-            print(f"  Total missing: {final_missing['total_missing']} ({final_missing['percentage']:.2f}%)")
+            logger.info("")
+            logger.info(f"Missing values before: {initial_missing}")
+            logger.info(f"Missing values after: {final_missing}")
             
-            # Save outputs
-            print(f"\n[SAVE] Saving outputs...")
-            ensure_dir(args.imputed_data)
-            ensure_dir(args.missing_metadata)
+            if final_missing == 0:
+                logger.info("✓ All missing values handled successfully")
+            elif final_missing < initial_missing:
+                logger.info(f"⚠ {final_missing} missing values remain")
             
-            df_out.to_parquet(args.imputed_data, index=False)
-            print(f"  ✓ Data: {args.imputed_data}")
+            logger.info(f"Final shape: {df_imputed.shape}")
+            logger.info("")
             
-            metadata = {
-                'timestamp': datetime.utcnow().isoformat() + 'Z',
-                'component': 'missing_values_handler',
-                'strategy_used': strategy_used,
-                'actions': actions,
-                'initial_missing': initial_missing,
-                'final_missing': final_missing,
-                'shape_change': {
-                    'before': {'rows': int(df.shape[0] if 'df' in locals() else 0), 'cols': int(df.shape[1] if 'df' in locals() else 0)},
-                    'after': {'rows': int(df_out.shape[0]), 'cols': int(df_out.shape[1])}
+            return df_imputed, imputer, stats
+        
+        
+        def main():
+            parser = argparse.ArgumentParser(
+                description="Generic Missing Values Handler for Clustering"
+            )
+            parser.add_argument("--input_data", required=True,
+                               help="Path to input dataset")
+            parser.add_argument("--method", default='mean',
+                               help="Missing value handling method")
+            parser.add_argument("--method_params", type=str, default='{}',
+                               help="Method-specific parameters as JSON string")
+            parser.add_argument("--output_output_data", required=True,
+                               help="Output path for imputed dataset")
+            parser.add_argument("--output_imputer", required=True,
+                               help="Output path for fitted imputer")
+            parser.add_argument("--output_report", required=True,
+                               help="Output path for imputation report")
+            
+            args = parser.parse_args()
+            
+            logger.info("="*80)
+            logger.info("MISSING VALUES HANDLER COMPONENT")
+            logger.info("="*80)
+            logger.info(f"Input: {args.input_data}")
+            logger.info(f"Method: {args.method}")
+            logger.info("")
+            
+            try:
+                # Ensure output directories
+                ensure_directory_exists(args.output_output_data)
+                ensure_directory_exists(args.output_imputer)
+                ensure_directory_exists(args.output_report)
+                
+                # Parse method parameters
+                try:
+                    method_params = json.loads(args.method_params)
+                    if method_params:
+                        logger.info(f"Method parameters: {method_params}")
+                        logger.info("")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON in method_params: {e}")
+                    logger.error(f"Received: {args.method_params}")
+                    logger.error("Expected format: '{\"param\": value}' (use double quotes)")
+                    sys.exit(1)
+                
+                # Load data
+                df = load_data(args.input_data)
+                
+                if df.empty:
+                    logger.error("ERROR: Dataset is empty")
+                    sys.exit(1)
+                
+                # Analyze missing patterns
+                missing_analysis = analyze_missing_patterns(df)
+                
+                # Check if any missing values exist
+                if missing_analysis['total_missing'] == 0:
+                    logger.info("="*80)
+                    logger.info("No missing values found - no imputation needed")
+                    logger.info("="*80)
+                    
+                    # Save original data
+                    df.to_csv(args.output_output_data, index=False)
+                    
+                    # Save empty imputer
+                    with open(args.output_imputer, 'wb') as f:
+                        pickle.dump(None, f)
+                    
+                    # Create report
+                    report = {
+                        'missing_analysis': missing_analysis,
+                        'imputation_stats': {
+                            'method': args.method,
+                            'method_params': method_params,
+                            'initial_missing': 0,
+                            'final_missing': 0,
+                            'imputation_success': True,
+                            'imputation_needed': False
+                        },
+                        'method': args.method,
+                        'method_params': method_params
+                    }
+                    
+                    with open(args.output_report, 'w') as f:
+                        json.dump(report, f, indent=2)
+                    
+                    logger.info("Outputs saved successfully")
+                    logger.info("="*80)
+                    sys.exit(0)
+                
+                # Handle missing values
+                df_imputed, imputer, stats = handle_missing_values(
+                    df=df,
+                    method=args.method,
+                    method_params=method_params
+                )
+                
+                # Validate result
+                if not stats['imputation_success']:
+                    logger.warning("="*80)
+                    logger.warning("WARNING: Not all missing values were handled")
+                    logger.warning(f"Remaining missing values: {stats['final_missing']}")
+                    logger.warning("="*80)
+                
+                # Save imputed data
+                df_imputed.to_csv(args.output_output_data, index=False)
+                logger.info(f"Imputed data saved: {args.output_output_data}")
+                
+                # Save imputer
+                with open(args.output_imputer, 'wb') as f:
+                    pickle.dump(imputer, f)
+                logger.info(f"Imputer saved: {args.output_imputer}")
+                
+                # Create comprehensive report
+                report = {
+                    'missing_analysis': missing_analysis,
+                    'imputation_stats': stats,
+                    'method': args.method,
+                    'method_params': method_params
                 }
-            }
-            
-            with open(args.missing_metadata, 'w') as f:
-                json.dump(metadata, f, indent=2)
-            print(f"  ✓ Metadata: {args.missing_metadata}")
-            
-            print("\n" + "=" * 80)
-            print("COMPONENT 2 COMPLETE")
-            print("=" * 80)
-            print(f"Missing values reduced: {initial_missing['total_missing']} → {final_missing['total_missing']}")
-            print(f"Final shape: {df_out.shape[0]} rows × {df_out.shape[1]} columns")
-            print("=" * 80 + "\n")
-            
-        except Exception as e:
-            print(f"\n[ERROR] {str(e)}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
-            sys.exit(1)
-    
+                
+                with open(args.output_report, 'w') as f:
+                    json.dump(report, f, indent=2)
+                logger.info(f"Report saved: {args.output_report}")
+                
+                logger.info("")
+                logger.info("="*80)
+                logger.info("MISSING VALUES HANDLING COMPLETED")
+                logger.info("="*80)
+                logger.info(f"Method: {args.method}")
+                logger.info(f"Initial missing: {missing_analysis['total_missing']} ({missing_analysis['missing_percentage']:.2f}%)")
+                logger.info(f"Final missing: {stats['final_missing']}")
+                
+                if stats['dropped_columns']:
+                    logger.info(f"Columns dropped: {len(stats['dropped_columns'])}")
+                if stats['dropped_rows'] > 0:
+                    logger.info(f"Rows dropped: {stats['dropped_rows']}")
+                
+                logger.info(f"Success: {stats['imputation_success']}")
+                logger.info("="*80)
+                
+            except ValueError as e:
+                logger.error(f"VALIDATION ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+            except Exception as e:
+                logger.error(f"ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+        
+        
+        if __name__ == "__main__":
+            main()
     args:
       - --input_data
       - {inputPath: input_data}
-      - --load_metadata
-      - {inputPath: load_metadata}
-      - --strategy
-      - {inputValue: strategy}
-      - --missing_threshold_cols
-      - {inputValue: missing_threshold_cols}
-      - --missing_threshold_rows
-      - {inputValue: missing_threshold_rows}
-      - --knn_neighbors
-      - {inputValue: knn_neighbors}
-      - --iterative_max_iter
-      - {inputValue: iterative_max_iter}
-      - --constant_fill_numeric
-      - {inputValue: constant_fill_numeric}
-      - --constant_fill_categorical
-      - {inputValue: constant_fill_categorical}
-      - --max_rows_for_knn
-      - {inputValue: max_rows_for_knn}
-      - --imputed_data
-      - {outputPath: imputed_data}
-      - --missing_metadata
-      - {outputPath: missing_metadata}
+      - --method
+      - {inputValue: method}
+      - --method_params
+      - {inputValue: method_params}
+      - --output_output_data
+      - {outputPath: output_data}
+      - --output_imputer
+      - {outputPath: imputer}
+      - --output_report
+      - {outputPath: report}
