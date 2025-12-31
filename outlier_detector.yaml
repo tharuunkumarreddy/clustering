@@ -35,12 +35,8 @@ outputs:
 
 implementation:
   container:
-    image: python:3.9
+    image: nikhilv215/nesy-factory:v23
     command:
-      - sh
-      - -c
-      - |
-        pip install pandas==2.0.3 numpy==1.24.3 scikit-learn==1.3.0 scipy==1.11.1 && exec "$0" "$@"
       - python3
       - -u
       - -c
@@ -636,3 +632,4 @@ implementation:
       - {outputPath: outlier_info}
       - --output_report
       - {outputPath: report}
+
