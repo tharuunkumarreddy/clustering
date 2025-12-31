@@ -1,0 +1,776 @@
+name: Universal Clustering Model Training Component
+description: |
+  Universal training component supporting ALL major clustering algorithms with embedded registry.
+  Supports KMeans, DBSCAN, HDBSCAN, Hierarchical, GMM, Fuzzy C-Means, and more.
+  Features auto-parameter tuning and comprehensive training modes.
+
+inputs:
+  - name: train_data
+    type: Data
+    description: 'Training dataset (CSV or NPY format)'
+  - name: algorithm
+    type: String
+    description: 'Clustering algorithm name (KMeans, DBSCAN, HDBSCAN, etc.)'
+  - name: params
+    type: String
+    description: 'Algorithm parameters as JSON string (uses defaults if empty)'
+    default: '{}'
+  - name: auto_tune
+    type: String
+    description: 'Auto-tune parameters based on data characteristics (true/false)'
+    default: 'false'
+  - name: training_mode
+    type: String
+    description: 'Training mode: auto, fit, fit_predict, or function_call'
+    default: 'auto'
+
+outputs:
+  - name: model
+    type: Model
+    description: 'Trained clustering model (PKL format)'
+  - name: train_labels
+    type: Data
+    description: 'Training cluster labels (NPY format)'
+  - name: train_data_ref
+    type: Data
+    description: 'Training data reference for inference (NPY format)'
+  - name: metadata
+    type: Data
+    description: 'Training metadata and results (JSON format)'
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import os
+        import sys
+        import json
+        import pickle
+        import argparse
+        import warnings
+        import numpy as np
+        import pandas as pd
+        
+        warnings.filterwarnings('ignore')
+        
+        
+        # ==================== EMBEDDED ALGORITHM REGISTRY ====================
+        
+        ALGORITHM_REGISTRY = {
+            # Centroid-Based
+            'KMeans': {
+                'module': 'sklearn.cluster',
+                'class': 'KMeans',
+                'category': 'centroid',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': True,
+                'has_labels': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'native',
+                'default_params': {
+                    'n_clusters': 8,
+                    'init': 'k-means++',
+                    'n_init': 10,
+                    'max_iter': 300,
+                    'tol': 0.0001,
+                    'random_state': 42,
+                    'algorithm': 'lloyd'
+                }
+            },
+            'MiniBatchKMeans': {
+                'module': 'sklearn.cluster',
+                'class': 'MiniBatchKMeans',
+                'category': 'centroid',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': True,
+                'has_labels': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'native',
+                'default_params': {
+                    'n_clusters': 8,
+                    'init': 'k-means++',
+                    'max_iter': 100,
+                    'batch_size': 256,
+                    'random_state': 42,
+                    'n_init': 3
+                }
+            },
+            'BisectingKMeans': {
+                'module': 'sklearn.cluster',
+                'class': 'BisectingKMeans',
+                'category': 'centroid',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': True,
+                'has_labels': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'native',
+                'default_params': {
+                    'n_clusters': 8,
+                    'init': 'k-means++',
+                    'n_init': 1,
+                    'max_iter': 300,
+                    'random_state': 42,
+                    'bisecting_strategy': 'biggest_inertia'
+                }
+            },
+            'KMedoids': {
+                'module': 'sklearn_extra.cluster',
+                'class': 'KMedoids',
+                'category': 'centroid',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': True,
+                'has_labels': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'native',
+                'requires_extra': True,
+                'default_params': {
+                    'n_clusters': 8,
+                    'metric': 'euclidean',
+                    'method': 'pam',
+                    'init': 'heuristic',
+                    'max_iter': 300,
+                    'random_state': 42
+                }
+            },
+            
+            # Density-Based
+            'DBSCAN': {
+                'module': 'sklearn.cluster',
+                'class': 'DBSCAN',
+                'category': 'density',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': False,
+                'has_labels': True,
+                'allows_noise': True,
+                'preferred_training': 'fit_predict',
+                'preferred_inference': 'nearest_neighbor',
+                'default_params': {
+                    'eps': 0.5,
+                    'min_samples': 5,
+                    'metric': 'euclidean',
+                    'algorithm': 'auto',
+                    'leaf_size': 30
+                }
+            },
+            'OPTICS': {
+                'module': 'sklearn.cluster',
+                'class': 'OPTICS',
+                'category': 'density',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': False,
+                'has_labels': True,
+                'allows_noise': True,
+                'preferred_training': 'fit_predict',
+                'preferred_inference': 'nearest_neighbor',
+                'default_params': {
+                    'min_samples': 5,
+                    'max_eps': float('inf'),
+                    'metric': 'euclidean',
+                    'cluster_method': 'xi',
+                    'xi': 0.05,
+                    'algorithm': 'auto'
+                }
+            },
+            'HDBSCAN': {
+                'module': 'hdbscan',
+                'class': 'HDBSCAN',
+                'category': 'density',
+                'has_fit': True,
+                'has_fit_predict': False,
+                'has_predict': False,
+                'has_labels': True,
+                'allows_noise': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'approximate_predict',
+                'requires_extra': True,
+                'default_params': {
+                    'min_cluster_size': 5,
+                    'min_samples': None,
+                    'cluster_selection_epsilon': 0.0,
+                    'metric': 'euclidean',
+                    'alpha': 1.0,
+                    'cluster_selection_method': 'eom'
+                }
+            },
+            
+            # Hierarchical
+            'AgglomerativeClustering': {
+                'module': 'sklearn.cluster',
+                'class': 'AgglomerativeClustering',
+                'category': 'hierarchical',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': False,
+                'has_labels': True,
+                'preferred_training': 'fit_predict',
+                'preferred_inference': 'nearest_neighbor',
+                'default_params': {
+                    'n_clusters': 2,
+                    'linkage': 'ward',
+                    'affinity': 'euclidean'
+                }
+            },
+            'BIRCH': {
+                'module': 'sklearn.cluster',
+                'class': 'BIRCH',
+                'category': 'hierarchical',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': True,
+                'has_labels': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'native',
+                'default_params': {
+                    'n_clusters': 3,
+                    'threshold': 0.5,
+                    'branching_factor': 50
+                }
+            },
+            
+            # Distribution-Based
+            'GaussianMixture': {
+                'module': 'sklearn.mixture',
+                'class': 'GaussianMixture',
+                'category': 'distribution',
+                'has_fit': True,
+                'has_fit_predict': False,
+                'has_predict': True,
+                'has_labels': False,
+                'has_predict_proba': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'native',
+                'default_params': {
+                    'n_components': 3,
+                    'covariance_type': 'full',
+                    'tol': 0.001,
+                    'max_iter': 100,
+                    'n_init': 1,
+                    'init_params': 'kmeans',
+                    'random_state': 42
+                }
+            },
+            'BayesianGaussianMixture': {
+                'module': 'sklearn.mixture',
+                'class': 'BayesianGaussianMixture',
+                'category': 'distribution',
+                'has_fit': True,
+                'has_fit_predict': False,
+                'has_predict': True,
+                'has_labels': False,
+                'has_predict_proba': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'native',
+                'default_params': {
+                    'n_components': 3,
+                    'covariance_type': 'full',
+                    'tol': 0.001,
+                    'max_iter': 100,
+                    'n_init': 1,
+                    'init_params': 'kmeans',
+                    'random_state': 42
+                }
+            },
+            
+            # Fuzzy
+            'FuzzyCMeans': {
+                'module': 'skfuzzy',
+                'class': 'cmeans',
+                'category': 'fuzzy',
+                'has_fit': False,
+                'has_fit_predict': False,
+                'has_predict': False,
+                'has_labels': False,
+                'is_function': True,
+                'preferred_training': 'function_call',
+                'preferred_inference': 'function_call',
+                'requires_extra': True,
+                'default_params': {
+                    'c': 3,
+                    'm': 2,
+                    'error': 0.005,
+                    'maxiter': 1000
+                }
+            },
+            
+            # Other
+            'MeanShift': {
+                'module': 'sklearn.cluster',
+                'class': 'MeanShift',
+                'category': 'other',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': True,
+                'has_labels': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'native',
+                'default_params': {
+                    'bandwidth': None,
+                    'bin_seeding': False,
+                    'min_bin_freq': 1,
+                    'cluster_all': True
+                }
+            },
+            'AffinityPropagation': {
+                'module': 'sklearn.cluster',
+                'class': 'AffinityPropagation',
+                'category': 'other',
+                'has_fit': True,
+                'has_fit_predict': True,
+                'has_predict': True,
+                'has_labels': True,
+                'preferred_training': 'fit',
+                'preferred_inference': 'native',
+                'default_params': {
+                    'damping': 0.5,
+                    'max_iter': 200,
+                    'convergence_iter': 15,
+                    'random_state': 42
+                }
+            },
+            'SpectralClustering': {
+                'module': 'sklearn.cluster',
+                'class': 'SpectralClustering',
+                'category': 'other',
+                'has_fit': False,
+                'has_fit_predict': True,
+                'has_predict': False,
+                'has_labels': True,
+                'preferred_training': 'fit_predict',
+                'preferred_inference': 'nearest_neighbor',
+                'default_params': {
+                    'n_clusters': 8,
+                    'random_state': 42,
+                    'n_init': 10,
+                    'gamma': 1.0,
+                    'affinity': 'rbf',
+                    'n_neighbors': 10,
+                    'assign_labels': 'kmeans'
+                }
+            }
+        }
+        
+        
+        def load_algorithm_class(algorithm_name):
+            # Dynamically load algorithm class
+            # Returns: tuple (AlgorithmClass, config_dict)
+            if algorithm_name not in ALGORITHM_REGISTRY:
+                available = ', '.join(ALGORITHM_REGISTRY.keys())
+                raise ValueError(
+                    f"Unknown algorithm: {algorithm_name}\n"
+                    f"Available algorithms: {available}"
+                )
+            
+            config = ALGORITHM_REGISTRY[algorithm_name]
+            module_name = config['module']
+            class_name = config['class']
+            
+            try:
+                if config.get('is_function'):
+                    # Handle functional APIs (Fuzzy C-Means)
+                    module = __import__(module_name, fromlist=[class_name])
+                    return getattr(module, class_name), config
+                else:
+                    # Handle class-based APIs
+                    module = __import__(module_name, fromlist=[class_name])
+                    return getattr(module, class_name), config
+            except ImportError as e:
+                if config.get('requires_extra'):
+                    package_map = {
+                        'sklearn_extra': 'scikit-learn-extra',
+                        'hdbscan': 'hdbscan',
+                        'skfuzzy': 'scikit-fuzzy'
+                    }
+                    package_name = package_map.get(module_name.split('.')[0], module_name.split('.')[0])
+                    raise ImportError(
+                        f"\n{algorithm_name} requires additional package: {package_name}\n"
+                        f"Install with: pip install {package_name}"
+                    ) from e
+                raise
+        
+        
+        def auto_tune_parameters(algorithm_name, default_params, n_samples, n_features):
+            # Auto-tune parameters based on data characteristics
+            # Returns: dict with tuned parameters
+            params = default_params.copy()
+            
+            print(f"\nAuto-tuning parameters for {algorithm_name}...")
+            print(f"Data shape: {n_samples} samples x {n_features} features")
+            
+            if algorithm_name in ['KMeans', 'MiniBatchKMeans', 'BisectingKMeans', 'KMedoids']:
+                # Heuristic: sqrt(n_samples/2)
+                suggested_k = max(2, min(int(np.sqrt(n_samples / 2)), 50))
+                params['n_clusters'] = suggested_k
+                print(f"Auto-tuned n_clusters: {suggested_k}")
+                
+            elif algorithm_name == 'DBSCAN':
+                # Heuristic: eps based on feature count
+                suggested_eps = max(0.3, min(2.0, n_features * 0.1))
+                suggested_min_samples = max(3, min(2 * n_features, 50))
+                params['eps'] = suggested_eps
+                params['min_samples'] = suggested_min_samples
+                print(f"Auto-tuned eps: {suggested_eps:.3f}")
+                print(f"Auto-tuned min_samples: {suggested_min_samples}")
+                
+            elif algorithm_name == 'HDBSCAN':
+                # Heuristic: min_cluster_size as 1% of data
+                suggested_size = max(5, int(n_samples * 0.01))
+                params['min_cluster_size'] = suggested_size
+                print(f"Auto-tuned min_cluster_size: {suggested_size}")
+                
+            elif algorithm_name in ['GaussianMixture', 'BayesianGaussianMixture']:
+                # Heuristic: fewer components for high-dimensional data
+                if n_features > 20:
+                    suggested_comp = max(2, min(5, int(np.sqrt(n_features))))
+                else:
+                    suggested_comp = max(2, min(10, int(np.sqrt(n_samples / 10))))
+                params['n_components'] = suggested_comp
+                print(f"Auto-tuned n_components: {suggested_comp}")
+            
+            elif algorithm_name == 'FuzzyCMeans':
+                suggested_c = max(2, min(int(np.sqrt(n_samples / 2)), 20))
+                params['c'] = suggested_c
+                print(f"Auto-tuned c (clusters): {suggested_c}")
+            
+            elif algorithm_name == 'SpectralClustering':
+                suggested_k = max(2, min(int(np.sqrt(n_samples / 2)), 30))
+                suggested_neighbors = max(5, min(int(np.log(n_samples)), 20))
+                params['n_clusters'] = suggested_k
+                params['n_neighbors'] = suggested_neighbors
+                print(f"Auto-tuned n_clusters: {suggested_k}")
+                print(f"Auto-tuned n_neighbors: {suggested_neighbors}")
+            
+            elif algorithm_name == 'AgglomerativeClustering':
+                suggested_k = max(2, min(int(np.sqrt(n_samples / 2)), 30))
+                params['n_clusters'] = suggested_k
+                print(f"Auto-tuned n_clusters: {suggested_k}")
+            
+            return params
+        
+        
+        def train_model(X_train, algorithm_name, parameters, training_mode='auto'):
+            # Train clustering model
+            # Returns: tuple (model, train_labels, config)
+            print(f"\nTraining {algorithm_name}...")
+            print(f"Data shape: {X_train.shape}")
+            print(f"Training mode: {training_mode}")
+            
+            # Load algorithm
+            AlgorithmClass, config = load_algorithm_class(algorithm_name)
+            
+            # Determine training mode
+            if training_mode == 'auto':
+                training_mode = config['preferred_training']
+                print(f"Auto-selected mode: {training_mode}")
+            
+            # Train based on mode
+            if training_mode == 'fit':
+                print(f"Training with fit()...")
+                model = AlgorithmClass(**parameters)
+                model.fit(X_train)
+                
+                # Get labels
+                if config['has_labels']:
+                    train_labels = model.labels_
+                else:
+                    # For GMM and similar (no labels_ attribute)
+                    train_labels = model.predict(X_train)
+            
+            elif training_mode == 'fit_predict':
+                print(f"Training with fit_predict()...")
+                model = AlgorithmClass(**parameters)
+                train_labels = model.fit_predict(X_train)
+            
+            elif training_mode == 'function_call':
+                print(f"Training with functional API...")
+                # Handle Fuzzy C-Means
+                if algorithm_name == 'FuzzyCMeans':
+                    import skfuzzy as fuzz
+                    # Fuzzy C-Means expects transposed data
+                    cntr, u, u0, d, jm, p, fpc = fuzz.cluster.cmeans(
+                        X_train.T, **parameters
+                    )
+                    # Get hard labels (max membership)
+                    train_labels = np.argmax(u, axis=0)
+                    # Store for inference
+                    model = {
+                        'centers': cntr,
+                        'membership': u,
+                        'params': parameters,
+                        'algorithm': 'FuzzyCMeans'
+                    }
+                else:
+                    raise ValueError(f"function_call not supported for {algorithm_name}")
+            else:
+                raise ValueError(f"Unknown training_mode: {training_mode}")
+            
+            # Analyze results
+            unique_labels = np.unique(train_labels)
+            n_clusters = len(unique_labels[unique_labels != -1])
+            n_noise = np.sum(train_labels == -1)
+            
+            print(f"\nTraining Results:")
+            print(f"Clusters found: {n_clusters}")
+            
+            if n_noise > 0:
+                print(f"Noise points: {n_noise} ({n_noise/len(train_labels)*100:.1f}%)")
+            
+            print(f"\nCluster distribution:")
+            for label in sorted(unique_labels):
+                count = np.sum(train_labels == label)
+                pct = count / len(train_labels) * 100
+                label_name = "Noise" if label == -1 else f"Cluster {label}"
+                print(f"  {label_name}: {count:>5} samples ({pct:>5.1f}%)")
+            
+            return model, train_labels, config
+        
+        
+        def save_outputs(model, train_labels, X_train, config, parameters, algorithm_name, 
+                        model_path, labels_path, train_data_path, metadata_path):
+            # Save model and training results
+            print(f"\nSaving outputs...")
+            
+            # Ensure directories exist
+            for path in [model_path, labels_path, train_data_path, metadata_path]:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+            
+            # Save model
+            with open(model_path, 'wb') as f:
+                pickle.dump(model, f)
+            model_size = os.path.getsize(model_path) / 1024
+            print(f"Model saved: {model_path} ({model_size:.2f} KB)")
+            
+            # Save training labels
+            np.save(labels_path, train_labels)
+            print(f"Labels saved: {labels_path}")
+            
+            # Save training data reference (for inference)
+            np.save(train_data_path, X_train)
+            print(f"Train data saved: {train_data_path}")
+            
+            # Create metadata
+            unique_labels = np.unique(train_labels)
+            n_clusters = len(unique_labels[unique_labels != -1])
+            n_noise = int(np.sum(train_labels == -1))
+            
+            metadata = {
+                'algorithm': algorithm_name,
+                'category': config['category'],
+                'parameters': parameters,
+                'capabilities': {
+                    'has_predict': config.get('has_predict', False),
+                    'allows_noise': config.get('allows_noise', False),
+                    'preferred_inference': config.get('preferred_inference', 'native')
+                },
+                'training_results': {
+                    'n_train_samples': int(X_train.shape[0]),
+                    'n_features': int(X_train.shape[1]),
+                    'n_clusters': int(n_clusters),
+                    'n_noise': n_noise,
+                    'noise_percentage': float(n_noise / len(train_labels) * 100),
+                    'cluster_sizes': {
+                        int(label): int(np.sum(train_labels == label))
+                        for label in unique_labels
+                    }
+                },
+                'training_complete': True
+            }
+            
+            # Save metadata
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            print(f"Metadata saved: {metadata_path}")
+            
+            return metadata
+        
+        
+        def main():
+            parser = argparse.ArgumentParser(
+                description='Universal Clustering Model Training Component'
+            )
+            
+            # Input arguments
+            parser.add_argument('--train_data', required=True,
+                               help='Training data path')
+            parser.add_argument('--algorithm', required=True,
+                               help='Clustering algorithm name')
+            parser.add_argument('--params', default='{}',
+                               help='Algorithm parameters as JSON')
+            parser.add_argument('--auto_tune', default='false',
+                               help='Auto-tune parameters (true/false)')
+            parser.add_argument('--training_mode', default='auto',
+                               help='Training mode')
+            
+            # Output arguments
+            parser.add_argument('--output_model', required=True,
+                               help='Output path for trained model')
+            parser.add_argument('--output_train_labels', required=True,
+                               help='Output path for training labels')
+            parser.add_argument('--output_train_data_ref', required=True,
+                               help='Output path for training data reference')
+            parser.add_argument('--output_metadata', required=True,
+                               help='Output path for metadata')
+            
+            args = parser.parse_args()
+            
+            try:
+                print("="*80)
+                print("UNIVERSAL CLUSTERING MODEL TRAINING")
+                print("="*80)
+                
+                # Load training data
+                print(f"\nLoading training data from: {args.train_data}")
+                
+                if args.train_data.endswith('.csv'):
+                    df = pd.read_csv(args.train_data)
+                    X_train = df.values
+                elif args.train_data.endswith('.npy'):
+                    X_train = np.load(args.train_data)
+                else:
+                    raise ValueError("Unsupported file format. Use .csv or .npy")
+                
+                print(f"Loaded successfully")
+                print(f"Shape: {X_train.shape[0]} samples x {X_train.shape[1]} features")
+                
+                # Validate data
+                if X_train.shape[0] < 2:
+                    raise ValueError(f"Need at least 2 samples, got {X_train.shape[0]}")
+                
+                if X_train.shape[1] < 1:
+                    raise ValueError(f"Need at least 1 feature, got {X_train.shape[1]}")
+                
+                if not np.isfinite(X_train).all():
+                    n_invalid = (~np.isfinite(X_train)).sum()
+                    raise ValueError(f"Data contains {n_invalid} NaN/Inf values")
+                
+                # Get algorithm configuration
+                if args.algorithm not in ALGORITHM_REGISTRY:
+                    available = ', '.join(ALGORITHM_REGISTRY.keys())
+                    raise ValueError(
+                        f"Unknown algorithm: {args.algorithm}\n"
+                        f"Available: {available}"
+                    )
+                
+                config = ALGORITHM_REGISTRY[args.algorithm]
+                
+                print(f"\nAlgorithm: {args.algorithm}")
+                print(f"Category: {config['category']}")
+                print(f"Training method: {config['preferred_training']}")
+                
+                # Prepare parameters
+                parameters = config['default_params'].copy()
+                
+                print(f"\nConfiguring parameters...")
+                print(f"Starting with defaults for {args.algorithm}")
+                
+                # Auto-tune if requested
+                if args.auto_tune.lower() == 'true':
+                    parameters = auto_tune_parameters(
+                        args.algorithm,
+                        parameters,
+                        X_train.shape[0],
+                        X_train.shape[1]
+                    )
+                
+                # Apply user parameters
+                if args.params and args.params != '{}':
+                    try:
+                        user_params = json.loads(args.params)
+                        print(f"\nApplying {len(user_params)} user parameters:")
+                        for key, value in user_params.items():
+                            if key in parameters:
+                                old_value = parameters[key]
+                                parameters[key] = value
+                                print(f"  {key}: {old_value} -> {value}")
+                            else:
+                                print(f"  Unknown parameter: {key} (ignored)")
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"Invalid JSON in params: {e}")
+                
+                print(f"\nFinal parameters:")
+                for key, value in parameters.items():
+                    print(f"  {key}: {value}")
+                
+                # Train model
+                model, train_labels, config = train_model(
+                    X_train=X_train,
+                    algorithm_name=args.algorithm,
+                    parameters=parameters,
+                    training_mode=args.training_mode
+                )
+                
+                # Save outputs
+                metadata = save_outputs(
+                    model=model,
+                    train_labels=train_labels,
+                    X_train=X_train,
+                    config=config,
+                    parameters=parameters,
+                    algorithm_name=args.algorithm,
+                    model_path=args.output_model,
+                    labels_path=args.output_train_labels,
+                    train_data_path=args.output_train_data_ref,
+                    metadata_path=args.output_metadata
+                )
+                
+                # Final summary
+                print(f"\n" + "="*80)
+                print("TRAINING COMPLETED SUCCESSFULLY")
+                print("="*80)
+                print(f"\nSummary:")
+                print(f"  Algorithm: {args.algorithm}")
+                print(f"  Category: {config['category']}")
+                print(f"  Training samples: {X_train.shape[0]}")
+                print(f"  Features: {X_train.shape[1]}")
+                print(f"  Clusters found: {metadata['training_results']['n_clusters']}")
+                
+                if metadata['training_results']['n_noise'] > 0:
+                    print(f"  Noise points: {metadata['training_results']['n_noise']} "
+                          f"({metadata['training_results']['noise_percentage']:.1f}%)")
+                
+                print(f"\nOutput files created:")
+                print(f"  Model: {args.output_model}")
+                print(f"  Labels: {args.output_train_labels}")
+                print(f"  Train data ref: {args.output_train_data_ref}")
+                print(f"  Metadata: {args.output_metadata}")
+                
+                print("="*80 + "\n")
+                
+            except Exception as e:
+                print(f"\nERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+        
+        
+        if __name__ == '__main__':
+            main()
+
+    args:
+      - --train_data
+      - {inputPath: train_data}
+      - --algorithm
+      - {inputValue: algorithm}
+      - --params
+      - {inputValue: params}
+      - --auto_tune
+      - {inputValue: auto_tune}
+      - --training_mode
+      - {inputValue: training_mode}
+      - --output_model
+      - {outputPath: model}
+      - --output_train_labels
+      - {outputPath: train_labels}
+      - --output_train_data_ref
+      - {outputPath: train_data_ref}
+      - --output_metadata
+      - {outputPath: metadata}
