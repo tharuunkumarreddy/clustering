@@ -12,8 +12,8 @@ inputs:
     type: Data
     description: "Test ground truth labels (NPY format from data splitting)"
   - name: bearer_token
-    type: Data
-    description: "Bearer token file for CDN authentication"
+    type: String
+    description: "Bearer token for CDN authentication"
   - name: domain
     type: String
     description: "Upload service base domain"
@@ -72,7 +72,7 @@ implementation:
         
         # Authentication and domain
         parser.add_argument('--bearer_token', required=True,
-                           help="Path to bearer token file")
+                           help="Bearer token string")
         parser.add_argument('--domain', required=True,
                            help="Upload service domain")
         parser.add_argument('--get_cdn', required=True,
@@ -97,10 +97,8 @@ implementation:
         print(f"CDN Base: {args.get_cdn}")
         print("")
         
-        # Read bearer token
-        print("Reading bearer token...")
-        with open(args.bearer_token, "r") as f:
-            bearer_token = f.read().strip()
+        # Use bearer token directly (it's passed as a string)
+        bearer_token = args.bearer_token
         print("✓ Bearer token loaded")
         print("")
         
@@ -295,7 +293,7 @@ implementation:
       - --test_ground_truth
       - {inputPath: test_ground_truth}
       - --bearer_token
-      - {inputPath: bearer_token}
+      - {inputValue: bearer_token}
       - --domain
       - {inputValue: domain}
       - --get_cdn
