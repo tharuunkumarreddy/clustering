@@ -1,0 +1,506 @@
+name: Generic Data Splitting Component
+description: Splits dataset into train and test sets for clustering evaluation. Supports stratified splitting with ground truth labels to maintain class distributions. Handles cases with or without ground truth labels. Outputs comprehensive split statistics.
+
+inputs:
+  - name: input_data
+    type: Data
+    description: 'Input dataset to split (CSV or Parquet)'
+  - name: ground_truth
+    type: Data
+    description: 'Ground truth labels for stratified splitting (NPY or CSV, optional)'
+    optional: true
+  - name: test_size
+    type: String
+    description: 'Proportion of test data (0-1). Use 0 for no test split.'
+    default: '0.2'
+  - name: random_state
+    type: String
+    description: 'Random seed for reproducibility'
+    default: '42'
+  - name: stratify
+    type: String
+    description: 'Use stratified splitting if ground truth available (true/false)'
+    default: 'true'
+
+outputs:
+  - name: train_data
+    type: Data
+    description: 'Training dataset (CSV format)'
+  - name: test_data
+    type: Data
+    description: 'Test dataset (CSV format)'
+  - name: train_ground_truth
+    type: Data
+    description: 'Training ground truth labels (NPY format or empty)'
+  - name: test_ground_truth
+    type: Data
+    description: 'Test ground truth labels (NPY format or empty)'
+  - name: split_info
+    type: Data
+    description: 'Split statistics and class distributions (JSON format)'
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import os
+        import sys
+        import json
+        import argparse
+        import logging
+        import pandas as pd
+        import numpy as np
+        from sklearn.model_selection import train_test_split
+        from pathlib import Path
+        
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger = logging.getLogger('data_splitter')
+        
+        
+        def ensure_directory_exists(file_path):
+            #Create directory if it doesn't exist#
+            directory = os.path.dirname(file_path)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
+                logger.info(f"Created directory: {directory}")
+        
+        
+        def load_data(input_path):
+            #Load data from CSV or Parquet file#
+            logger.info(f"Loading dataset from: {input_path}")
+            
+            ext = Path(input_path).suffix.lower()
+            
+            try:
+                if ext in ['.parquet', '.pq']:
+                    df = pd.read_parquet(input_path)
+                    logger.info("Loaded Parquet file")
+                else:
+                    df = pd.read_csv(input_path)
+                    logger.info("Loaded CSV file")
+                
+                logger.info(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+                return df
+                
+            except Exception as e:
+                logger.error(f"Error loading data: {str(e)}")
+                raise
+        
+        
+        def load_ground_truth(ground_truth_path):
+            #
+            Load ground truth labels if available
+            
+            Parameters:
+            -----------
+            ground_truth_path : str
+                Path to ground truth file
+            
+            Returns:
+            --------
+            ground_truth : np.ndarray or None
+                Ground truth labels
+            #
+            if not ground_truth_path or ground_truth_path.lower() == 'none':
+                logger.info("No ground truth provided")
+                return None
+            
+            logger.info(f"Loading ground truth from: {ground_truth_path}")
+            
+            try:
+                # Check if file exists
+                if not os.path.exists(ground_truth_path):
+                    logger.info("Ground truth file not found")
+                    return None
+                
+                # Check if file is empty
+                if os.path.getsize(ground_truth_path) == 0:
+                    logger.info("Ground truth file is empty")
+                    return None
+                
+                # Load based on extension
+                ext = Path(ground_truth_path).suffix.lower()
+                
+                if ext == '.npy':
+                    ground_truth = np.load(ground_truth_path)
+                    logger.info(f"Loaded ground truth (NPY): {len(ground_truth)} labels")
+                    return ground_truth
+                    
+                elif ext == '.csv':
+                    df_gt = pd.read_csv(ground_truth_path)
+                    
+                    if len(df_gt.columns) == 1:
+                        ground_truth = df_gt.iloc[:, 0].values
+                    else:
+                        # Use last column as ground truth
+                        ground_truth = df_gt.iloc[:, -1].values
+                    
+                    logger.info(f"Loaded ground truth (CSV): {len(ground_truth)} labels")
+                    return ground_truth
+                    
+                else:
+                    logger.warning(f"Unknown ground truth format: {ext}")
+                    return None
+                    
+            except FileNotFoundError:
+                logger.info("Ground truth file not found")
+                return None
+            except Exception as e:
+                logger.warning(f"Could not load ground truth: {str(e)}")
+                return None
+        
+        
+        def split_data(df, ground_truth, test_size, random_state, stratify):
+            #
+            Split data into train and test sets
+            
+            Parameters:
+            -----------
+            df : pd.DataFrame
+                Dataset to split
+            ground_truth : np.ndarray or None
+                Ground truth labels for stratification
+            test_size : float
+                Proportion of test data (0-1)
+            random_state : int
+                Random seed
+            stratify : bool
+                Whether to use stratified splitting
+            
+            Returns:
+            --------
+            train_df : pd.DataFrame
+                Training data
+            test_df : pd.DataFrame
+                Test data
+            train_gt : np.ndarray or None
+                Training ground truth
+            test_gt : np.ndarray or None
+                Test ground truth
+            split_info : dict
+                Split statistics
+            #
+            logger.info("="*80)
+            logger.info("SPLITTING DATA")
+            logger.info("="*80)
+            logger.info(f"Test size: {test_size}")
+            logger.info(f"Random state: {random_state}")
+            logger.info(f"Stratify: {stratify}")
+            logger.info("")
+            
+            # Handle no split case
+            if test_size == 0 or test_size is None:
+                logger.info("No test split requested (test_size=0)")
+                empty_df = pd.DataFrame(columns=df.columns)
+                
+                split_info = {
+                    'test_size': 0,
+                    'train_samples': int(len(df)),
+                    'test_samples': 0,
+                    'stratified': False,
+                    'train_percentage': 100.0,
+                    'test_percentage': 0.0
+                }
+                
+                if ground_truth is not None:
+                    return df, empty_df, ground_truth, np.array([]), split_info
+                else:
+                    return df, empty_df, None, None, split_info
+            
+            # Validate test_size
+            if not (0 < test_size < 1):
+                raise ValueError(
+                    f"test_size must be between 0 and 1, got {test_size}"
+                )
+            
+            split_info = {
+                'test_size': float(test_size),
+                'random_state': int(random_state),
+                'stratified': False
+            }
+            
+            # CASE 1: Stratified split with ground truth
+            if ground_truth is not None and stratify:
+                logger.info("Performing stratified split using ground truth")
+                
+                # Validate ground truth length
+                if len(ground_truth) != len(df):
+                    raise ValueError(
+                        f"Ground truth length ({len(ground_truth)}) does not match "
+                        f"dataset length ({len(df)})"
+                    )
+                
+                try:
+                    train_df, test_df, train_gt, test_gt = train_test_split(
+                        df,
+                        ground_truth,
+                        test_size=test_size,
+                        random_state=random_state,
+                        stratify=ground_truth
+                    )
+                    
+                    split_info['stratified'] = True
+                    split_info['n_classes'] = int(len(np.unique(ground_truth)))
+                    
+                    # Calculate class distributions
+                    unique_train, counts_train = np.unique(train_gt, return_counts=True)
+                    unique_test, counts_test = np.unique(test_gt, return_counts=True)
+                    
+                    train_dist = {int(k): int(v) for k, v in zip(unique_train, counts_train)}
+                    test_dist = {int(k): int(v) for k, v in zip(unique_test, counts_test)}
+                    
+                    split_info['train_class_distribution'] = train_dist
+                    split_info['test_class_distribution'] = test_dist
+                    
+                    logger.info("Stratified split completed successfully")
+                    logger.info(f"Number of classes: {split_info['n_classes']}")
+                    logger.info(f"Train class distribution: {train_dist}")
+                    logger.info(f"Test class distribution: {test_dist}")
+                    
+                except ValueError as e:
+                    logger.warning(f"Stratified split failed: {e}")
+                    logger.warning("Falling back to random split")
+                    
+                    # Random split as fallback
+                    train_df, test_df = train_test_split(
+                        df,
+                        test_size=test_size,
+                        random_state=random_state
+                    )
+                    
+                    # Split ground truth manually using indices
+                    train_indices = train_df.index.values
+                    test_indices = test_df.index.values
+                    train_gt = ground_truth[train_indices]
+                    test_gt = ground_truth[test_indices]
+                    
+                    split_info['stratified'] = False
+                    split_info['stratify_fallback'] = True
+            
+            # CASE 2: Random split with ground truth (no stratification)
+            elif ground_truth is not None and not stratify:
+                logger.info(
+                    "Performing random split "
+                    "(ground truth available but not stratifying)"
+                )
+                
+                if len(ground_truth) != len(df):
+                    raise ValueError(
+                        f"Ground truth length ({len(ground_truth)}) does not match "
+                        f"dataset length ({len(df)})"
+                    )
+                
+                train_df, test_df, train_gt, test_gt = train_test_split(
+                    df,
+                    ground_truth,
+                    test_size=test_size,
+                    random_state=random_state
+                )
+                
+                logger.info("Random split completed")
+            
+            # CASE 3: Random split without ground truth
+            else:
+                logger.info("Performing random split (no ground truth)")
+                
+                train_df, test_df = train_test_split(
+                    df,
+                    test_size=test_size,
+                    random_state=random_state
+                )
+                
+                train_gt = None
+                test_gt = None
+                
+                logger.info("Random split completed")
+            
+            # Reset indices for clean datasets
+            train_df = train_df.reset_index(drop=True)
+            test_df = test_df.reset_index(drop=True)
+            
+            # Update split statistics
+            split_info['train_samples'] = int(len(train_df))
+            split_info['test_samples'] = int(len(test_df))
+            
+            total_samples = len(train_df) + len(test_df)
+            split_info['train_percentage'] = float(len(train_df) / total_samples * 100)
+            split_info['test_percentage'] = float(len(test_df) / total_samples * 100)
+            
+            logger.info("")
+            logger.info(f"Train samples: {len(train_df)} ({split_info['train_percentage']:.1f}%)")
+            logger.info(f"Test samples: {len(test_df)} ({split_info['test_percentage']:.1f}%)")
+            
+            if train_gt is not None:
+                logger.info(f"Train ground truth shape: {train_gt.shape}")
+                logger.info(f"Test ground truth shape: {test_gt.shape}")
+            
+            logger.info("")
+            
+            return train_df, test_df, train_gt, test_gt, split_info
+        
+        
+        def main():
+            parser = argparse.ArgumentParser(
+                description="Generic Data Splitting Component"
+            )
+            parser.add_argument("--input_data", required=True,
+                               help="Path to input dataset")
+            parser.add_argument("--ground_truth", default='',
+                               help="Path to ground truth labels")
+            parser.add_argument("--test_size", type=str, default='0.2',
+                               help="Proportion of test data")
+            parser.add_argument("--random_state", type=str, default='42',
+                               help="Random seed")
+            parser.add_argument("--stratify", default='true',
+                               help="Use stratified splitting")
+            parser.add_argument("--output_train_data", required=True,
+                               help="Output path for training data")
+            parser.add_argument("--output_test_data", required=True,
+                               help="Output path for test data")
+            parser.add_argument("--output_train_ground_truth", required=True,
+                               help="Output path for training ground truth")
+            parser.add_argument("--output_test_ground_truth", required=True,
+                               help="Output path for test ground truth")
+            parser.add_argument("--output_split_info", required=True,
+                               help="Output path for split information")
+            
+            args = parser.parse_args()
+            
+            logger.info("="*80)
+            logger.info("DATA SPLITTING COMPONENT")
+            logger.info("="*80)
+            logger.info(f"Input: {args.input_data}")
+            logger.info(f"Test size: {args.test_size}")
+            logger.info(f"Stratify: {args.stratify}")
+            logger.info("")
+            
+            try:
+                # Ensure output directories
+                ensure_directory_exists(args.output_train_data)
+                ensure_directory_exists(args.output_test_data)
+                ensure_directory_exists(args.output_train_ground_truth)
+                ensure_directory_exists(args.output_test_ground_truth)
+                ensure_directory_exists(args.output_split_info)
+                
+                # Load data
+                df = load_data(args.input_data)
+                
+                if df.empty:
+                    logger.error("ERROR: Dataset is empty")
+                    sys.exit(1)
+                
+                # Load ground truth
+                ground_truth = load_ground_truth(args.ground_truth)
+                
+                # Parse parameters
+                test_size = float(args.test_size)
+                random_state = int(args.random_state)
+                stratify = args.stratify.lower() == 'true'
+                
+                # Split data
+                train_df, test_df, train_gt, test_gt, split_info = split_data(
+                    df=df,
+                    ground_truth=ground_truth,
+                    test_size=test_size,
+                    random_state=random_state,
+                    stratify=stratify
+                )
+                
+                # Save training data
+                train_df.to_csv(args.output_train_data, index=False)
+                logger.info(f"Training data saved: {args.output_train_data}")
+                
+                # Save test data (create empty if no split)
+                if not test_df.empty:
+                    test_df.to_csv(args.output_test_data, index=False)
+                else:
+                    pd.DataFrame(columns=train_df.columns).to_csv(
+                        args.output_test_data,
+                        index=False
+                    )
+                logger.info(f"Test data saved: {args.output_test_data}")
+                
+                # Save training ground truth
+                if train_gt is not None and len(train_gt) > 0:
+                    np.save(args.output_train_ground_truth, train_gt)
+                    logger.info(
+                        f"Training ground truth saved: {args.output_train_ground_truth}"
+                    )
+                else:
+                    # Create empty marker file
+                    with open(args.output_train_ground_truth, 'w') as f:
+                        f.write("")
+                    logger.info("No training ground truth (empty marker file created)")
+                
+                # Save test ground truth
+                if test_gt is not None and len(test_gt) > 0:
+                    np.save(args.output_test_ground_truth, test_gt)
+                    logger.info(
+                        f"Test ground truth saved: {args.output_test_ground_truth}"
+                    )
+                else:
+                    # Create empty marker file
+                    with open(args.output_test_ground_truth, 'w') as f:
+                        f.write("")
+                    logger.info("No test ground truth (empty marker file created)")
+                
+                # Save split information
+                with open(args.output_split_info, 'w') as f:
+                    json.dump(split_info, f, indent=2)
+                logger.info(f"Split information saved: {args.output_split_info}")
+                
+                logger.info("")
+                logger.info("="*80)
+                logger.info("DATA SPLITTING COMPLETED")
+                logger.info("="*80)
+                logger.info(f"Training samples: {split_info['train_samples']}")
+                logger.info(f"Test samples: {split_info['test_samples']}")
+                logger.info(f"Stratified: {split_info['stratified']}")
+                
+                if split_info.get('n_classes'):
+                    logger.info(f"Number of classes: {split_info['n_classes']}")
+                
+                logger.info("="*80)
+                
+            except ValueError as e:
+                logger.error(f"VALIDATION ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+            except Exception as e:
+                logger.error(f"ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+        
+        
+        if __name__ == "__main__":
+            main()
+    args:
+      - --input_data
+      - {inputPath: input_data}
+      - --ground_truth
+      - {inputPath: ground_truth}
+      - --test_size
+      - {inputValue: test_size}
+      - --random_state
+      - {inputValue: random_state}
+      - --stratify
+      - {inputValue: stratify}
+      - --output_train_data
+      - {outputPath: train_data}
+      - --output_test_data
+      - {outputPath: test_data}
+      - --output_train_ground_truth
+      - {outputPath: train_ground_truth}
+      - --output_test_ground_truth
+      - {outputPath: test_ground_truth}
+      - --output_split_info
+      - {outputPath: split_info}
