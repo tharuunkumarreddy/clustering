@@ -1,357 +1,638 @@
-name: Outlier Detector v1.0
-description: |
-  Outlier detection for clustering preprocessing.
-  Implements multiple methods from the generic framework:
-  - Distance-based outliers
-  - Density-based (LOF - Local Outlier Factor)
-  - Probability-based (Local Outlier Probability)
-  - Statistical (IQR, Z-score)
-  - Isolation Forest
-  
-  Based on section 3.2 of the clustering preprocessing framework.
+name: Generic Outlier Detection & Handling Component
+description: Comprehensive outlier detection and handling for clustering with 4 detection methods and 7 handling strategies. Supports method-specific parameters via JSON. Detection methods include Z-score, IQR, LOF, and Isolation Forest. Handling methods include remove, clip, winsorize, transforms, and flagging.
 
 inputs:
-  - {name: input_data, type: Dataset, description: 'Input dataset after missing values handling'}
-  - {name: missing_metadata, type: Data, description: 'Metadata from previous step', optional: true}
-  - {name: method, type: String, default: "auto", description: 'Method: auto, none, iqr, zscore, lof, isolation_forest, distance'}
-  - {name: action, type: String, default: "flag", description: 'Action: flag, remove, cap'}
-  - {name: contamination, type: Float, default: "0.05", description: 'Expected outlier proportion (0-0.5)'}
-  - {name: iqr_multiplier, type: Float, default: "1.5", description: 'IQR multiplier for statistical methods'}
-  - {name: zscore_threshold, type: Float, default: "3.0", description: 'Z-score threshold for outliers'}
-  - {name: lof_neighbors, type: Integer, default: "20", description: 'Number of neighbors for LOF'}
-  - {name: save_outlier_info, type: String, default: "true", description: 'Save outlier indices and scores'}
+  - name: input_data
+    type: Data
+    description: 'Input dataset (CSV or Parquet)'
+  - name: detection_method
+    type: String
+    description: 'Outlier detection method: zscore, iqr, lof, isolation_forest'
+    default: 'zscore'
+  - name: detection_params
+    type: String
+    description: 'Detection method parameters as JSON string. Examples: {"threshold":3.0}, {"factor":1.5}, {"n_neighbors":20}'
+    default: '{}'
+  - name: handling_method
+    type: String
+    description: 'Outlier handling method: remove, clip, cap, winsorize, log_transform, sqrt_transform, flag'
+    default: 'clip'
+  - name: handling_params
+    type: String
+    description: 'Handling method parameters as JSON string. Examples: {"use_iqr":true,"factor":1.5}, {"limits":[0.05,0.05]}'
+    default: '{}'
 
 outputs:
-  - {name: processed_data, type: Dataset, description: 'Data after outlier handling'}
-  - {name: outlier_metadata, type: Data, description: 'Outlier detection metadata and indices'}
+  - name: output_data
+    type: Data
+    description: 'Dataset with outliers handled (CSV format)'
+  - name: outlier_info
+    type: Model
+    description: 'Outlier detection information and masks (PKL format)'
+  - name: report
+    type: Data
+    description: 'Comprehensive outlier detection and handling report (JSON format)'
 
 implementation:
   container:
-    image: python:3.9-slim
+    image: python:3.9
     command:
+      - sh
+      - -c
+      - |
+        pip install pandas==2.0.3 numpy==1.24.3 scikit-learn==1.3.0 scipy==1.11.1 && exec "$0" "$@"
       - python3
       - -u
       - -c
       - |
-        import os, sys, json, argparse
-        import subprocess
-        
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
-                       "pandas", "numpy", "pyarrow", "scikit-learn"], check=True)
-        
+        import os
+        import sys
+        import json
+        import argparse
+        import logging
+        import pickle
         import pandas as pd
         import numpy as np
-        from datetime import datetime
+        from scipy import stats
+        from scipy.stats import mstats
         from sklearn.neighbors import LocalOutlierFactor
         from sklearn.ensemble import IsolationForest
-        from sklearn.preprocessing import StandardScaler
+        from pathlib import Path
         
-        def ensure_dir(path):
-            d = os.path.dirname(path)
-            if d and not os.path.exists(d):
-                os.makedirs(d, exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger = logging.getLogger('outlier_handler')
         
-        def detect_iqr_outliers(df, multiplier=1.5):
-            """IQR-based outlier detection"""
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            outlier_mask = pd.Series(False, index=df.index)
-            outlier_scores = pd.DataFrame(index=df.index)
-            
-            for col in numeric_cols:
-                Q1 = df[col].quantile(0.25)
-                Q3 = df[col].quantile(0.75)
-                IQR = Q3 - Q1
-                lower = Q1 - multiplier * IQR
-                upper = Q3 + multiplier * IQR
-                
-                col_outliers = (df[col] < lower) | (df[col] > upper)
-                outlier_mask |= col_outliers
-                
-                # Score based on distance from bounds
-                outlier_scores[col] = np.where(
-                    df[col] < lower, 
-                    (lower - df[col]) / (IQR + 1e-10),
-                    np.where(df[col] > upper, (df[col] - upper) / (IQR + 1e-10), 0)
-                )
-            
-            # Aggregate score
-            combined_score = outlier_scores.max(axis=1) if not outlier_scores.empty else pd.Series(0, index=df.index)
-            
-            return outlier_mask, combined_score
         
-        def detect_zscore_outliers(df, threshold=3.0):
-            """Z-score based outlier detection"""
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            outlier_mask = pd.Series(False, index=df.index)
-            outlier_scores = pd.DataFrame(index=df.index)
-            
-            for col in numeric_cols:
-                mean = df[col].mean()
-                std = df[col].std()
-                if std > 0:
-                    z_scores = np.abs((df[col] - mean) / std)
-                    col_outliers = z_scores > threshold
-                    outlier_mask |= col_outliers
-                    outlier_scores[col] = z_scores
-            
-            combined_score = outlier_scores.max(axis=1) if not outlier_scores.empty else pd.Series(0, index=df.index)
-            
-            return outlier_mask, combined_score
+        def ensure_directory_exists(file_path):
+            #Create directory if it doesn't exist#
+            directory = os.path.dirname(file_path)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
+                logger.info(f"Created directory: {directory}")
         
-        def detect_lof_outliers(df, n_neighbors=20, contamination=0.05):
-            """Local Outlier Factor detection"""
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            
-            if len(numeric_cols) == 0:
-                return pd.Series(False, index=df.index), pd.Series(0, index=df.index)
-            
-            X = df[numeric_cols].values
-            
-            # Adjust n_neighbors if needed
-            n_neighbors = min(n_neighbors, len(df) - 1)
-            
-            lof = LocalOutlierFactor(n_neighbors=n_neighbors, contamination=contamination)
-            outlier_labels = lof.fit_predict(X)
-            outlier_scores = -lof.negative_outlier_factor_  # Higher = more outlier-like
-            
-            outlier_mask = pd.Series(outlier_labels == -1, index=df.index)
-            outlier_score = pd.Series(outlier_scores, index=df.index)
-            
-            return outlier_mask, outlier_score
         
-        def detect_isolation_forest_outliers(df, contamination=0.05):
-            """Isolation Forest outlier detection"""
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        def load_data(input_path):
+            #Load data from CSV or Parquet file#
+            logger.info(f"Loading dataset from: {input_path}")
             
-            if len(numeric_cols) == 0:
-                return pd.Series(False, index=df.index), pd.Series(0, index=df.index)
+            ext = Path(input_path).suffix.lower()
             
-            X = df[numeric_cols].values
-            
-            iso_forest = IsolationForest(contamination=contamination, random_state=42)
-            outlier_labels = iso_forest.fit_predict(X)
-            outlier_scores = -iso_forest.score_samples(X)  # Higher = more outlier-like
-            
-            outlier_mask = pd.Series(outlier_labels == -1, index=df.index)
-            outlier_score = pd.Series(outlier_scores, index=df.index)
-            
-            return outlier_mask, outlier_score
-        
-        def detect_distance_outliers(df, contamination=0.05):
-            """Simple distance-based outlier detection using mean distance"""
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            
-            if len(numeric_cols) == 0:
-                return pd.Series(False, index=df.index), pd.Series(0, index=df.index)
-            
-            X = df[numeric_cols].values
-            
-            # Standardize
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            
-            # Calculate distance from center
-            center = X_scaled.mean(axis=0)
-            distances = np.sqrt(((X_scaled - center) ** 2).sum(axis=1))
-            
-            # Mark top contamination% as outliers
-            threshold = np.percentile(distances, (1 - contamination) * 100)
-            outlier_mask = pd.Series(distances > threshold, index=df.index)
-            outlier_score = pd.Series(distances, index=df.index)
-            
-            return outlier_mask, outlier_score
-        
-        def select_auto_method(df):
-            """Automatically select outlier detection method"""
-            n_rows = len(df)
-            n_numeric = len(df.select_dtypes(include=[np.number]).columns)
-            
-            if n_numeric == 0:
-                return 'none'
-            elif n_rows < 50:
-                return 'iqr'  # Small dataset, use simple method
-            elif n_rows < 1000:
-                return 'lof'  # Medium dataset, use LOF
-            elif n_numeric <= 10:
-                return 'isolation_forest'  # Low dimensionality, isolation forest works well
-            else:
-                return 'iqr'  # High dimensionality or large dataset, use robust IQR
-        
-        def handle_outliers(df, outlier_mask, outlier_scores, action):
-            """Apply action to detected outliers"""
-            n_outliers = outlier_mask.sum()
-            
-            if action == 'remove':
-                df_out = df[~outlier_mask].reset_index(drop=True)
-                action_taken = f"Removed {n_outliers} outlier rows"
-                
-            elif action == 'cap':
-                df_out = df.copy()
-                numeric_cols = df_out.select_dtypes(include=[np.number]).columns.tolist()
-                
-                for col in numeric_cols:
-                    Q1 = df_out[col].quantile(0.05)
-                    Q99 = df_out[col].quantile(0.95)
-                    df_out[col] = df_out[col].clip(lower=Q1, upper=Q99)
-                
-                action_taken = f"Capped outliers to 5th-95th percentile range"
-                
-            elif action == 'flag':
-                df_out = df.copy()
-                df_out['_outlier_flag'] = outlier_mask.astype(int)
-                df_out['_outlier_score'] = outlier_scores
-                action_taken = f"Flagged {n_outliers} outliers in new columns"
-                
-            else:
-                df_out = df.copy()
-                action_taken = "No action taken"
-            
-            return df_out, action_taken
-        
-        # Main execution
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--input_data', type=str, required=True)
-        parser.add_argument('--missing_metadata', type=str)
-        parser.add_argument('--method', type=str, default='auto')
-        parser.add_argument('--action', type=str, default='flag')
-        parser.add_argument('--contamination', type=float, default=0.05)
-        parser.add_argument('--iqr_multiplier', type=float, default=1.5)
-        parser.add_argument('--zscore_threshold', type=float, default=3.0)
-        parser.add_argument('--lof_neighbors', type=int, default=20)
-        parser.add_argument('--save_outlier_info', type=str, default='true')
-        parser.add_argument('--processed_data', type=str, required=True)
-        parser.add_argument('--outlier_metadata', type=str, required=True)
-        args = parser.parse_args()
-        
-        try:
-            print("=" * 80)
-            print("CLUSTERING PREPROCESSING - COMPONENT 3: OUTLIER DETECTOR")
-            print("=" * 80)
-            
-            # Load data
-            df = pd.read_parquet(args.input_data)
-            print(f"[LOAD] Input shape: {df.shape}")
-            
-            # Determine method
-            method = args.method.lower()
-            if method == 'auto':
-                method = select_auto_method(df)
-                print(f"\n[AUTO] Selected method: {method}")
-            else:
-                print(f"\n[METHOD] Using: {method}")
-            
-            if method == 'none':
-                print(f"\n[SKIP] Outlier detection disabled, passing through data unchanged")
-                df_out = df.copy()
-                outlier_mask = pd.Series(False, index=df.index)
-                outlier_scores = pd.Series(0, index=df.index)
-                method_used = 'none'
-                action_taken = 'No action - detection disabled'
-                
-            else:
-                # Detect outliers
-                print(f"\n[DETECT] Running {method} outlier detection...")
-                
-                if method == 'iqr':
-                    outlier_mask, outlier_scores = detect_iqr_outliers(df, args.iqr_multiplier)
-                elif method == 'zscore':
-                    outlier_mask, outlier_scores = detect_zscore_outliers(df, args.zscore_threshold)
-                elif method == 'lof':
-                    outlier_mask, outlier_scores = detect_lof_outliers(df, args.lof_neighbors, args.contamination)
-                elif method == 'isolation_forest':
-                    outlier_mask, outlier_scores = detect_isolation_forest_outliers(df, args.contamination)
-                elif method == 'distance':
-                    outlier_mask, outlier_scores = detect_distance_outliers(df, args.contamination)
+            try:
+                if ext in ['.parquet', '.pq']:
+                    df = pd.read_parquet(input_path)
+                    logger.info("Loaded Parquet file")
                 else:
-                    print(f"  ⚠ Unknown method '{method}', using IQR")
-                    outlier_mask, outlier_scores = detect_iqr_outliers(df, args.iqr_multiplier)
-                    method = 'iqr'
+                    df = pd.read_csv(input_path)
+                    logger.info("Loaded CSV file")
                 
-                method_used = method
-                n_outliers = outlier_mask.sum()
-                outlier_pct = (n_outliers / len(df) * 100) if len(df) > 0 else 0
+                logger.info(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+                return df
                 
-                print(f"  Detected {n_outliers} outliers ({outlier_pct:.2f}%)")
-                
-                # Handle outliers
-                print(f"\n[ACTION] Applying action: {args.action}")
-                df_out, action_taken = handle_outliers(df, outlier_mask, outlier_scores, args.action)
-                print(f"  {action_taken}")
+            except Exception as e:
+                logger.error(f"Error loading data: {str(e)}")
+                raise
+        
+        
+        def detect_outliers(df, method, detection_params):
+            #
+            Detect outliers using specified method
             
-            # Prepare outlier information
-            save_info = args.save_outlier_info.lower() in ('true', '1', 'yes', 't')
-            outlier_info = None
+            Parameters:
+            -----------
+            df : pd.DataFrame
+                Input dataset
+            method : str
+                Detection method: 'zscore', 'iqr', 'lof', 'isolation_forest'
+            detection_params : dict
+                Method-specific parameters
             
-            if save_info and method != 'none':
-                outlier_indices = df.index[outlier_mask].tolist()
-                top_outliers = outlier_scores.nlargest(min(20, len(outlier_scores)))
-                
-                outlier_info = {
-                    'total_detected': int(outlier_mask.sum()),
-                    'percentage': float(outlier_mask.sum() / len(df) * 100) if len(df) > 0 else 0,
-                    'indices': outlier_indices[:100],  # Limit to first 100
-                    'top_outlier_scores': {int(k): float(v) for k, v in top_outliers.items()}
+            Returns:
+            --------
+            outlier_mask : pd.Series
+                Boolean mask (True = outlier)
+            detection_info : dict
+                Detection metadata and scores
+            #
+            logger.info("="*80)
+            logger.info("DETECTING OUTLIERS")
+            logger.info("="*80)
+            logger.info(f"Method: {method}")
+            
+            if detection_params:
+                logger.info(f"Parameters: {detection_params}")
+            
+            logger.info("")
+            
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            if len(numeric_cols) == 0:
+                logger.warning("No numeric columns for outlier detection")
+                logger.warning("Returning no outliers")
+                return pd.Series(False, index=df.index), {
+                    'method': method,
+                    'n_outliers': 0,
+                    'outlier_percentage': 0.0,
+                    'warning': 'No numeric columns found'
                 }
             
-            # Save outputs
-            print(f"\n[SAVE] Saving outputs...")
-            ensure_dir(args.processed_data)
-            ensure_dir(args.outlier_metadata)
+            logger.info(f"Analyzing {len(numeric_cols)} numeric columns")
             
-            df_out.to_parquet(args.processed_data, index=False)
-            print(f"  ✓ Data: {args.processed_data}")
-            
-            metadata = {
-                'timestamp': datetime.utcnow().isoformat() + 'Z',
-                'component': 'outlier_detector',
-                'method_used': method_used,
-                'action': args.action,
-                'action_taken': action_taken,
-                'outlier_info': outlier_info,
-                'shape_change': {
-                    'before': {'rows': int(df.shape[0]), 'cols': int(df.shape[1])},
-                    'after': {'rows': int(df_out.shape[0]), 'cols': int(df_out.shape[1])}
-                }
+            detection_info = {
+                'method': method,
+                'params': detection_params,
+                'numeric_columns': numeric_cols,
+                'numeric_column_count': len(numeric_cols)
             }
             
-            with open(args.outlier_metadata, 'w') as f:
-                json.dump(metadata, f, indent=2)
-            print(f"  ✓ Metadata: {args.outlier_metadata}")
+            # METHOD 1: Z-Score Detection
+            if method == 'zscore':
+                threshold = detection_params.get('threshold', 3.0)
+                logger.info(f"Z-score threshold: {threshold}")
+                
+                # Calculate Z-scores for all numeric columns
+                z_scores = np.abs(stats.zscore(df[numeric_cols], nan_policy='omit'))
+                z_scores_df = pd.DataFrame(z_scores, columns=numeric_cols, index=df.index)
+                
+                # Mark outliers (any column exceeds threshold)
+                outlier_mask = (z_scores > threshold).any(axis=1)
+                
+                detection_info['threshold'] = threshold
+                detection_info['max_z_score_per_sample'] = z_scores.max(axis=1).tolist()[:100]  # Limit size
+                
+                # Per-column outlier counts
+                logger.info("Per-column outlier counts:")
+                for col in numeric_cols:
+                    col_outliers = (z_scores_df[col] > threshold).sum()
+                    if col_outliers > 0:
+                        logger.info(f"  {col}: {col_outliers} outliers")
             
-            print("\n" + "=" * 80)
-            print("COMPONENT 3 COMPLETE")
-            print("=" * 80)
-            print(f"Method: {method_used}")
-            print(f"Action: {action_taken}")
-            print(f"Final shape: {df_out.shape[0]} rows × {df_out.shape[1]} columns")
-            print("=" * 80 + "\n")
+            # METHOD 2: IQR (Interquartile Range) Detection
+            elif method == 'iqr':
+                factor = detection_params.get('factor', 1.5)
+                logger.info(f"IQR factor: {factor}")
+                
+                outlier_mask = pd.Series(False, index=df.index)
+                bounds = {}
+                
+                logger.info("Calculating IQR bounds per column:")
+                for col in numeric_cols:
+                    Q1 = df[col].quantile(0.25)
+                    Q3 = df[col].quantile(0.75)
+                    IQR = Q3 - Q1
+                    
+                    lower_bound = Q1 - factor * IQR
+                    upper_bound = Q3 + factor * IQR
+                    
+                    bounds[col] = {
+                        'lower': float(lower_bound),
+                        'upper': float(upper_bound),
+                        'Q1': float(Q1),
+                        'Q3': float(Q3),
+                        'IQR': float(IQR)
+                    }
+                    
+                    col_outliers = (df[col] < lower_bound) | (df[col] > upper_bound)
+                    outlier_mask = outlier_mask | col_outliers
+                    
+                    n_col_outliers = col_outliers.sum()
+                    if n_col_outliers > 0:
+                        logger.info(
+                            f"  {col}: {n_col_outliers} outliers "
+                            f"(bounds: [{lower_bound:.3f}, {upper_bound:.3f}])"
+                        )
+                
+                detection_info['bounds'] = bounds
+                detection_info['factor'] = factor
             
-        except Exception as e:
-            print(f"\n[ERROR] {str(e)}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
-            sys.exit(1)
-    
+            # METHOD 3: LOF (Local Outlier Factor) Detection
+            elif method == 'lof':
+                n_neighbors = detection_params.get('n_neighbors', 20)
+                contamination = detection_params.get('contamination', 0.1)
+                
+                logger.info(f"LOF parameters:")
+                logger.info(f"  n_neighbors: {n_neighbors}")
+                logger.info(f"  contamination: {contamination}")
+                
+                X = df[numeric_cols].values
+                
+                # Check if we have enough samples
+                if len(df) < n_neighbors:
+                    logger.warning(
+                        f"Not enough samples ({len(df)}) for n_neighbors={n_neighbors}"
+                    )
+                    n_neighbors = max(2, len(df) - 1)
+                    logger.warning(f"Reduced n_neighbors to {n_neighbors}")
+                
+                lof = LocalOutlierFactor(
+                    n_neighbors=n_neighbors,
+                    contamination=contamination
+                )
+                outlier_labels = lof.fit_predict(X)
+                lof_scores = lof.negative_outlier_factor_
+                
+                outlier_mask = pd.Series(outlier_labels == -1, index=df.index)
+                
+                detection_info['lof_scores_sample'] = lof_scores.tolist()[:100]  # Limit size
+                detection_info['n_neighbors'] = n_neighbors
+                detection_info['contamination'] = contamination
+                detection_info['lof_score_mean'] = float(lof_scores.mean())
+                detection_info['lof_score_std'] = float(lof_scores.std())
+            
+            # METHOD 4: Isolation Forest Detection
+            elif method == 'isolation_forest':
+                contamination = detection_params.get('contamination', 0.1)
+                random_state = detection_params.get('random_state', 42)
+                n_estimators = detection_params.get('n_estimators', 100)
+                
+                logger.info(f"Isolation Forest parameters:")
+                logger.info(f"  contamination: {contamination}")
+                logger.info(f"  n_estimators: {n_estimators}")
+                logger.info(f"  random_state: {random_state}")
+                
+                X = df[numeric_cols].values
+                
+                iso_forest = IsolationForest(
+                    contamination=contamination,
+                    random_state=random_state,
+                    n_estimators=n_estimators,
+                    n_jobs=-1,
+                    verbose=0
+                )
+                
+                outlier_labels = iso_forest.fit_predict(X)
+                anomaly_scores = iso_forest.score_samples(X)
+                
+                outlier_mask = pd.Series(outlier_labels == -1, index=df.index)
+                
+                detection_info['anomaly_scores_sample'] = anomaly_scores.tolist()[:100]  # Limit size
+                detection_info['contamination'] = contamination
+                detection_info['n_estimators'] = n_estimators
+                detection_info['random_state'] = random_state
+                detection_info['anomaly_score_mean'] = float(anomaly_scores.mean())
+                detection_info['anomaly_score_std'] = float(anomaly_scores.std())
+            
+            else:
+                raise ValueError(
+                    f"Unknown outlier detection method: {method}. "
+                    f"Available: zscore, iqr, lof, isolation_forest"
+                )
+            
+            # Calculate summary statistics
+            n_outliers = outlier_mask.sum()
+            pct_outliers = (n_outliers / len(df)) * 100 if len(df) > 0 else 0
+            detection_info['n_outliers'] = int(n_outliers)
+            detection_info['outlier_percentage'] = float(pct_outliers)
+            
+            logger.info("")
+            logger.info(f"Found {n_outliers} outliers ({pct_outliers:.2f}%)")
+            logger.info("")
+            
+            return outlier_mask, detection_info
+        
+        
+        def handle_outliers(df, outlier_mask, method, handling_params, detection_info):
+            #
+            Handle detected outliers
+            
+            Parameters:
+            -----------
+            df : pd.DataFrame
+                Input dataset
+            outlier_mask : pd.Series
+                Boolean mask of outliers
+            method : str
+                Handling method
+            handling_params : dict
+                Method-specific parameters
+            detection_info : dict
+                Information from detection phase
+            
+            Returns:
+            --------
+            df_handled : pd.DataFrame
+                Dataset with outliers handled
+            handling_stats : dict
+                Statistics about handling
+            #
+            logger.info("="*80)
+            logger.info("HANDLING OUTLIERS")
+            logger.info("="*80)
+            logger.info(f"Method: {method}")
+            
+            if handling_params:
+                logger.info(f"Parameters: {handling_params}")
+            
+            logger.info("")
+            
+            df_handled = df.copy()
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            stats = {
+                'method': method,
+                'params': handling_params,
+                'n_outliers_detected': int(outlier_mask.sum()),
+                'n_rows_removed': 0,
+                'columns_processed': numeric_cols,
+                'handling_details': {}
+            }
+            
+            # METHOD 1: Remove outlier rows
+            if method == 'remove':
+                removed_indices = df[outlier_mask].index.tolist()
+                df_handled = df[~outlier_mask].reset_index(drop=True)
+                stats['n_rows_removed'] = len(removed_indices)
+                stats['removed_indices_sample'] = removed_indices[:100]  # Limit size
+                logger.info(f"Removed {len(removed_indices)} outlier rows")
+                logger.info(f"Remaining rows: {len(df_handled)}")
+            
+            # METHOD 2: Clip/Cap values to bounds
+            elif method in ['clip', 'cap']:
+                use_iqr = handling_params.get('use_iqr', True)
+                factor = handling_params.get('factor', 1.5)
+                
+                # Check if we have bounds from IQR detection
+                if detection_info and 'bounds' in detection_info:
+                    bounds = detection_info['bounds']
+                    logger.info("Using bounds from IQR detection")
+                elif use_iqr:
+                    logger.info(f"Calculating IQR bounds (factor={factor})")
+                    bounds = {}
+                    for col in numeric_cols:
+                        Q1 = df[col].quantile(0.25)
+                        Q3 = df[col].quantile(0.75)
+                        IQR = Q3 - Q1
+                        bounds[col] = {
+                            'lower': float(Q1 - factor * IQR),
+                            'upper': float(Q3 + factor * IQR)
+                        }
+                else:
+                    # Use min/max (no clipping really)
+                    logger.info("Using min/max as bounds (no effective clipping)")
+                    bounds = {}
+                    for col in numeric_cols:
+                        bounds[col] = {
+                            'lower': float(df[col].min()),
+                            'upper': float(df[col].max())
+                        }
+                
+                total_clipped = 0
+                for col in numeric_cols:
+                    if col in bounds:
+                        lower = bounds[col]['lower']
+                        upper = bounds[col]['upper']
+                        
+                        # Count values that will be clipped
+                        values_clipped = ((df[col] < lower) | (df[col] > upper)).sum()
+                        total_clipped += values_clipped
+                        
+                        # Apply clipping
+                        df_handled[col] = df_handled[col].clip(lower=lower, upper=upper)
+                        
+                        stats['handling_details'][col] = {
+                            'lower_bound': lower,
+                            'upper_bound': upper,
+                            'values_clipped': int(values_clipped)
+                        }
+                        
+                        if values_clipped > 0:
+                            logger.info(
+                                f"  {col}: clipped {values_clipped} values "
+                                f"to [{lower:.3f}, {upper:.3f}]"
+                            )
+                
+                logger.info(f"Total values clipped: {total_clipped}")
+            
+            # METHOD 3: Winsorize (replace extremes with percentiles)
+            elif method == 'winsorize':
+                limits = handling_params.get('limits', [0.05, 0.05])
+                logger.info(f"Winsorizing with limits: {limits}")
+                
+                for col in numeric_cols:
+                    original_values = df_handled[col].copy()
+                    df_handled[col] = mstats.winsorize(df_handled[col], limits=limits)
+                    
+                    values_changed = (original_values != df_handled[col]).sum()
+                    stats['handling_details'][col] = {
+                        'limits': limits,
+                        'values_changed': int(values_changed)
+                    }
+                    
+                    logger.info(f"  {col}: {values_changed} values winsorized")
+            
+            # METHOD 4: Log transformation
+            elif method == 'log_transform':
+                transformed_count = 0
+                skipped_count = 0
+                
+                for col in numeric_cols:
+                    if (df_handled[col] > 0).all():
+                        df_handled[col] = np.log1p(df_handled[col])
+                        stats['handling_details'][col] = {'transform': 'log1p', 'status': 'success'}
+                        transformed_count += 1
+                        logger.info(f"  {col}: log transformed")
+                    else:
+                        logger.warning(f"  {col}: skipped (contains non-positive values)")
+                        stats['handling_details'][col] = {
+                            'transform': 'skipped',
+                            'reason': 'non-positive values'
+                        }
+                        skipped_count += 1
+                
+                logger.info(f"Transformed: {transformed_count}, Skipped: {skipped_count}")
+            
+            # METHOD 5: Square root transformation
+            elif method == 'sqrt_transform':
+                transformed_count = 0
+                skipped_count = 0
+                
+                for col in numeric_cols:
+                    if (df_handled[col] >= 0).all():
+                        df_handled[col] = np.sqrt(df_handled[col])
+                        stats['handling_details'][col] = {'transform': 'sqrt', 'status': 'success'}
+                        transformed_count += 1
+                        logger.info(f"  {col}: sqrt transformed")
+                    else:
+                        logger.warning(f"  {col}: skipped (contains negative values)")
+                        stats['handling_details'][col] = {
+                            'transform': 'skipped',
+                            'reason': 'negative values'
+                        }
+                        skipped_count += 1
+                
+                logger.info(f"Transformed: {transformed_count}, Skipped: {skipped_count}")
+            
+            # METHOD 6: Flag outliers with indicator column
+            elif method == 'flag':
+                flag_column = handling_params.get('flag_column', 'is_outlier')
+                df_handled[flag_column] = outlier_mask.astype(int)
+                stats['handling_details']['flag_column_added'] = flag_column
+                stats['handling_details']['n_flagged'] = int(outlier_mask.sum())
+                logger.info(f"Added '{flag_column}' flag column")
+                logger.info(f"  Flagged {outlier_mask.sum()} outliers as 1")
+            
+            else:
+                raise ValueError(
+                    f"Unknown outlier handling method: {method}. "
+                    f"Available: remove, clip, cap, winsorize, log_transform, sqrt_transform, flag"
+                )
+            
+            stats['initial_shape'] = list(df.shape)
+            stats['final_shape'] = list(df_handled.shape)
+            
+            logger.info("")
+            logger.info(f"Final shape: {df_handled.shape}")
+            logger.info("")
+            
+            return df_handled, stats
+        
+        
+        def main():
+            parser = argparse.ArgumentParser(
+                description="Generic Outlier Detection & Handling Component"
+            )
+            parser.add_argument("--input_data", required=True,
+                               help="Path to input dataset")
+            parser.add_argument("--detection_method", default='zscore',
+                               help="Outlier detection method")
+            parser.add_argument("--detection_params", type=str, default='{}',
+                               help="Detection method parameters as JSON")
+            parser.add_argument("--handling_method", default='clip',
+                               help="Outlier handling method")
+            parser.add_argument("--handling_params", type=str, default='{}',
+                               help="Handling method parameters as JSON")
+            parser.add_argument("--output_output_data", required=True,
+                               help="Output path for processed dataset")
+            parser.add_argument("--output_outlier_info", required=True,
+                               help="Output path for outlier information")
+            parser.add_argument("--output_report", required=True,
+                               help="Output path for outlier report")
+            
+            args = parser.parse_args()
+            
+            logger.info("="*80)
+            logger.info("OUTLIER DETECTION & HANDLING COMPONENT")
+            logger.info("="*80)
+            logger.info(f"Input: {args.input_data}")
+            logger.info(f"Detection method: {args.detection_method}")
+            logger.info(f"Handling method: {args.handling_method}")
+            logger.info("")
+            
+            try:
+                # Ensure output directories
+                ensure_directory_exists(args.output_output_data)
+                ensure_directory_exists(args.output_outlier_info)
+                ensure_directory_exists(args.output_report)
+                
+                # Parse parameters
+                try:
+                    detection_params = json.loads(args.detection_params)
+                    handling_params = json.loads(args.handling_params)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON in parameters: {e}")
+                    logger.error(f"Detection params: {args.detection_params}")
+                    logger.error(f"Handling params: {args.handling_params}")
+                    logger.error("Expected format: '{\"param\": value}' (use double quotes)")
+                    sys.exit(1)
+                
+                # Load data
+                df = load_data(args.input_data)
+                
+                if df.empty:
+                    logger.error("ERROR: Dataset is empty")
+                    sys.exit(1)
+                
+                # Detect outliers
+                outlier_mask, detection_info = detect_outliers(
+                    df=df,
+                    method=args.detection_method,
+                    detection_params=detection_params
+                )
+                
+                # Handle outliers
+                df_handled, handling_stats = handle_outliers(
+                    df=df,
+                    outlier_mask=outlier_mask,
+                    method=args.handling_method,
+                    handling_params=handling_params,
+                    detection_info=detection_info
+                )
+                
+                # Save processed data
+                df_handled.to_csv(args.output_output_data, index=False)
+                logger.info(f"Processed data saved: {args.output_output_data}")
+                
+                # Save outlier information (including mask for reference)
+                detection_info['outlier_mask'] = outlier_mask
+                with open(args.output_outlier_info, 'wb') as f:
+                    pickle.dump(detection_info, f)
+                logger.info(f"Outlier info saved: {args.output_outlier_info}")
+                
+                # Create comprehensive report
+                report = {
+                    'detection': {
+                        'method': args.detection_method,
+                        'params': detection_params,
+                        'n_outliers': detection_info['n_outliers'],
+                        'outlier_percentage': detection_info['outlier_percentage'],
+                        'numeric_columns': detection_info.get('numeric_columns', [])
+                    },
+                    'handling': {
+                        'method': args.handling_method,
+                        'params': handling_params,
+                        'stats': handling_stats
+                    },
+                    'initial_shape': list(df.shape),
+                    'final_shape': list(df_handled.shape),
+                    'rows_removed': handling_stats.get('n_rows_removed', 0)
+                }
+                
+                with open(args.output_report, 'w') as f:
+                    json.dump(report, f, indent=2)
+                logger.info(f"Report saved: {args.output_report}")
+                
+                logger.info("")
+                logger.info("="*80)
+                logger.info("OUTLIER HANDLING COMPLETED")
+                logger.info("="*80)
+                logger.info(f"Detection method: {args.detection_method}")
+                logger.info(f"Handling method: {args.handling_method}")
+                logger.info(f"Outliers detected: {detection_info['n_outliers']} ({detection_info['outlier_percentage']:.2f}%)")
+                logger.info(f"Rows removed: {handling_stats['n_rows_removed']}")
+                logger.info(f"Initial shape: {df.shape}")
+                logger.info(f"Final shape: {df_handled.shape}")
+                logger.info("="*80)
+                
+            except ValueError as e:
+                logger.error(f"VALIDATION ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+            except Exception as e:
+                logger.error(f"ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+        
+        
+        if __name__ == "__main__":
+            main()
     args:
       - --input_data
       - {inputPath: input_data}
-      - --missing_metadata
-      - {inputPath: missing_metadata}
-      - --method
-      - {inputValue: method}
-      - --action
-      - {inputValue: action}
-      - --contamination
-      - {inputValue: contamination}
-      - --iqr_multiplier
-      - {inputValue: iqr_multiplier}
-      - --zscore_threshold
-      - {inputValue: zscore_threshold}
-      - --lof_neighbors
-      - {inputValue: lof_neighbors}
-      - --save_outlier_info
-      - {inputValue: save_outlier_info}
-      - --processed_data
-      - {outputPath: processed_data}
-      - --outlier_metadata
-      - {outputPath: outlier_metadata}
+      - --detection_method
+      - {inputValue: detection_method}
+      - --detection_params
+      - {inputValue: detection_params}
+      - --handling_method
+      - {inputValue: handling_method}
+      - --handling_params
+      - {inputValue: handling_params}
+      - --output_output_data
+      - {outputPath: output_data}
+      - --output_outlier_info
+      - {outputPath: outlier_info}
+      - --output_report
+      - {outputPath: report}
