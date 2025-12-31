@@ -24,6 +24,14 @@ inputs:
     type: String
     description: 'Database type for PI API (TIDB, MYSQL, etc.)'
     default: 'TIDB'
+  - name: feature_columns
+    type: String
+    description: 'Comma-separated list of feature columns to select (empty = all columns except target). Example: "col1,col2,col3"'
+    default: ''
+  - name: exclude_columns
+    type: String
+    description: 'Comma-separated list of columns to exclude (e.g., IDs, timestamps). Example: "id,timestamp,created_at"'
+    default: ''
 
 outputs:
   - name: data
@@ -38,8 +46,12 @@ outputs:
 
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v23
+    image: python:3.9
     command:
+      - sh
+      - -c
+      - |
+        pip install pandas==2.0.3 numpy==1.24.3 requests==2.31.0 urllib3==2.0.7 && exec "$0" "$@"
       - python3
       - -u
       - -c
@@ -215,6 +227,102 @@ implementation:
             logger.info(f"Created DataFrame: {df.shape[0]} rows x {df.shape[1]} columns")
             
             return df
+        
+        
+        def select_features(df, feature_columns, exclude_columns):
+            #
+            Select specific features or exclude unwanted columns
+            
+            Parameters:
+            -----------
+            df : pd.DataFrame
+                Input dataframe
+            feature_columns : str
+                Comma-separated list of columns to keep (empty = keep all)
+            exclude_columns : str
+                Comma-separated list of columns to exclude
+            
+            Returns:
+            --------
+            pd.DataFrame
+                DataFrame with selected features
+            dict
+                Selection metadata
+            #
+            logger.info("="*80)
+            logger.info("FEATURE SELECTION")
+            logger.info("="*80)
+            
+            original_columns = df.columns.tolist()
+            logger.info(f"Original columns: {len(original_columns)}")
+            
+            selection_metadata = {
+                'original_columns': original_columns,
+                'original_count': len(original_columns)
+            }
+            
+            # Parse feature columns (whitelist)
+            selected_features = []
+            if feature_columns and feature_columns.strip():
+                selected_features = [col.strip() for col in feature_columns.split(',') if col.strip()]
+                logger.info(f"Feature whitelist specified: {len(selected_features)} columns")
+                
+                # Validate all specified columns exist
+                missing_cols = [col for col in selected_features if col not in df.columns]
+                if missing_cols:
+                    available = ', '.join(original_columns)
+                    raise ValueError(
+                        f"Specified features not found: {missing_cols}. "
+                        f"Available columns: {available}"
+                    )
+                
+                df = df[selected_features]
+                logger.info(f"Selected {len(selected_features)} specified features")
+                selection_metadata['selection_type'] = 'whitelist'
+                selection_metadata['selected_features'] = selected_features
+            
+            # Parse exclude columns (blacklist)
+            excluded_features = []
+            if exclude_columns and exclude_columns.strip():
+                excluded_features = [col.strip() for col in exclude_columns.split(',') if col.strip()]
+                logger.info(f"Exclude list specified: {len(excluded_features)} columns")
+                
+                # Filter out columns that exist
+                existing_excluded = [col for col in excluded_features if col in df.columns]
+                missing_excluded = [col for col in excluded_features if col not in df.columns]
+                
+                if missing_excluded:
+                    logger.warning(f"Some exclude columns not found (skipped): {missing_excluded}")
+                
+                if existing_excluded:
+                    df = df.drop(columns=existing_excluded)
+                    logger.info(f"Excluded {len(existing_excluded)} columns: {existing_excluded}")
+                    selection_metadata['excluded_features'] = existing_excluded
+                else:
+                    logger.info("No columns to exclude (none found in data)")
+                    selection_metadata['excluded_features'] = []
+                
+                if not selection_metadata.get('selection_type'):
+                    selection_metadata['selection_type'] = 'blacklist'
+            
+            if not feature_columns and not exclude_columns:
+                logger.info("No feature selection specified - using all columns")
+                selection_metadata['selection_type'] = 'all'
+            
+            final_columns = df.columns.tolist()
+            selection_metadata['final_columns'] = final_columns
+            selection_metadata['final_count'] = len(final_columns)
+            
+            logger.info(f"Final feature set: {len(final_columns)} columns")
+            
+            # Log column changes
+            removed_cols = set(original_columns) - set(final_columns)
+            if removed_cols:
+                logger.info(f"Removed columns: {sorted(removed_cols)}")
+            
+            logger.info("")
+            
+            return df, selection_metadata
         
         
         def extract_ground_truth(df, target_column, target_mapping_json):
@@ -521,6 +629,10 @@ implementation:
                                help="Records per page for pagination")
             parser.add_argument("--db_type", default='TIDB',
                                help="Database type for PI API")
+            parser.add_argument("--feature_columns", default='',
+                               help="Comma-separated list of features to select")
+            parser.add_argument("--exclude_columns", default='',
+                               help="Comma-separated list of columns to exclude")
             parser.add_argument("--output_data", required=True,
                                help="Output path for feature data")
             parser.add_argument("--output_metadata", required=True,
@@ -536,6 +648,8 @@ implementation:
             logger.info(f"API URL: {args.api_url}")
             logger.info(f"DB Type: {args.db_type}")
             logger.info(f"Page Size: {args.page_size}")
+            logger.info(f"Feature columns: {args.feature_columns if args.feature_columns else 'All (unless excluded)'}")
+            logger.info(f"Exclude columns: {args.exclude_columns if args.exclude_columns else 'None'}")
             logger.info(f"Target column: {args.target_column if args.target_column else 'None'}")
             logger.info("")
             
@@ -554,6 +668,13 @@ implementation:
                     access_token=args.access_token,
                     page_size=page_size,
                     db_type=args.db_type
+                )
+                
+                # Select features (before ground truth extraction)
+                df, selection_metadata = select_features(
+                    df=df,
+                    feature_columns=args.feature_columns,
+                    exclude_columns=args.exclude_columns
                 )
                 
                 # Extract ground truth if specified
@@ -582,6 +703,9 @@ implementation:
                 # Add ground truth info to metadata
                 if ground_truth_info:
                     metadata['ground_truth'] = ground_truth_info
+                
+                # Add feature selection info to metadata
+                metadata['feature_selection'] = selection_metadata
                 
                 # Add API info to metadata
                 metadata['data_source'] = {
@@ -657,10 +781,13 @@ implementation:
       - {inputValue: page_size}
       - --db_type
       - {inputValue: db_type}
+      - --feature_columns
+      - {inputValue: feature_columns}
+      - --exclude_columns
+      - {inputValue: exclude_columns}
       - --output_data
       - {outputPath: data}
       - --output_metadata
       - {outputPath: metadata}
       - --output_ground_truth
       - {outputPath: ground_truth}
-
