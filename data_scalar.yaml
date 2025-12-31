@@ -463,7 +463,7 @@ implementation:
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON in method_params: {e}")
                     logger.error(f"Received: {args.method_params}")
-                    logger.error("Expected format: '{\"param\": value}' (use double quotes)")
+                    logger.error('Expected format: {"param": value} with double quotes')
                     sys.exit(1)
                 
                 # Load data
