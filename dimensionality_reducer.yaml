@@ -53,7 +53,7 @@ implementation:
         
         
         def ensure_directory_exists(file_path):
-            #Create directory if it doesn't exist#
+            # Create directory if it doesn't exist
             directory = os.path.dirname(file_path)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory, exist_ok=True)
@@ -61,7 +61,7 @@ implementation:
         
         
         def load_data(input_path):
-            #Load data from CSV or Parquet file#
+            # Load data from CSV or Parquet file
             logger.info(f"Loading dataset from: {input_path}")
             
             ext = Path(input_path).suffix.lower()
@@ -83,25 +83,9 @@ implementation:
         
         
         def determine_n_components(X, method='variance', variance_threshold=0.95, max_components=None):
-            #
-            Automatically determine optimal number of components
-            
-            Parameters:
-            -----------
-            X : np.ndarray
-                Data matrix
-            method : str
-                Selection method: 'variance' or 'kaiser'
-            variance_threshold : float
-                Cumulative variance threshold for 'variance' method
-            max_components : int or None
-                Maximum components to consider
-            
-            Returns:
-            --------
-            n_components : int
-                Optimal number of components
-            #
+            # Automatically determine optimal number of components
+            # Parameters: X (data matrix), method, variance_threshold, max_components
+            # Returns: n_components (int)
             n_features = X.shape[1]
             n_samples = X.shape[0]
             
@@ -141,27 +125,9 @@ implementation:
         
         
         def apply_dimensionality_reduction(X, method, method_params):
-            #
-            Apply dimensionality reduction using specified method
-            
-            Parameters:
-            -----------
-            X : np.ndarray
-                Data matrix (n_samples, n_features)
-            method : str
-                Reduction method name
-            method_params : dict
-                Method-specific parameters
-            
-            Returns:
-            --------
-            X_reduced : np.ndarray
-                Reduced data matrix
-            reducer : object
-                Fitted reducer object
-            metadata : dict
-                Reduction metadata and statistics
-            #
+            # Apply dimensionality reduction using specified method
+            # Parameters: X (data matrix), method, method_params
+            # Returns: X_reduced, reducer object, metadata dict
             logger.info("="*80)
             logger.info("APPLYING DIMENSIONALITY REDUCTION")
             logger.info("="*80)
@@ -432,7 +398,7 @@ implementation:
                                help="Dimensionality reduction method")
             parser.add_argument("--method_params", type=str, default='{}',
                                help="Method-specific parameters as JSON")
-            parser.add_argument("--output_output_data", required=True,
+            parser.add_argument("--output_data", required=True,
                                help="Output path for reduced dataset")
             parser.add_argument("--output_reducer", required=True,
                                help="Output path for fitted reducer")
@@ -450,7 +416,7 @@ implementation:
             
             try:
                 # Ensure output directories
-                ensure_directory_exists(args.output_output_data)
+                ensure_directory_exists(args.output_data)
                 ensure_directory_exists(args.output_reducer)
                 ensure_directory_exists(args.output_metadata)
                 
@@ -505,8 +471,8 @@ implementation:
                     logger.info(f"Preserved {len(non_numeric_cols)} non-numeric columns")
                 
                 # Save reduced data
-                df_reduced.to_csv(args.output_output_data, index=False)
-                logger.info(f"Reduced data saved: {args.output_output_data}")
+                df_reduced.to_csv(args.output_data, index=False)
+                logger.info(f"Reduced data saved: {args.output_data}")
                 
                 # Save reducer
                 with open(args.output_reducer, 'wb') as f:
@@ -568,4 +534,3 @@ implementation:
       - {outputPath: reducer}
       - --output_metadata
       - {outputPath: metadata}
-
