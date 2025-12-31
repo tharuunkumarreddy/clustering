@@ -23,7 +23,7 @@ inputs:
     default: '{}'
 
 outputs:
-  - name: output_data
+  - name: data
     type: Data
     description: 'Dataset with outliers handled (CSV format)'
   - name: outlier_info
@@ -626,10 +626,11 @@ implementation:
       - {inputValue: handling_method}
       - --handling_params
       - {inputValue: handling_params}
-      - --output_output_data
-      - {outputPath: output_data}
+      - --output_data
+      - {outputPath: data}
       - --output_outlier_info
       - {outputPath: outlier_info}
       - --output_report
       - {outputPath: report}
+
 
