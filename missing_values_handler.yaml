@@ -15,7 +15,7 @@ inputs:
     default: '{}'
 
 outputs:
-  - name: output_data
+  - name: data
     type: Data
     description: 'Dataset with missing values handled (CSV format)'
   - name: imputer
@@ -523,10 +523,11 @@ implementation:
       - {inputValue: method}
       - --method_params
       - {inputValue: method_params}
-      - --output_output_data
-      - {outputPath: output_data}
+      - --output_data
+      - {outputPath: data}
       - --output_imputer
       - {outputPath: imputer}
       - --output_report
       - {outputPath: report}
+
 
