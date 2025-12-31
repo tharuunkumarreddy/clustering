@@ -1,344 +1,665 @@
-name: Data Loader for Clustering v1.0
-description: |
-  Generic data loading component for clustering preprocessing pipeline.
-  Supports multiple formats and provides comprehensive validation.
-  Based on the generic framework for clustering preprocessing.
+name: Generic Data Loading Component with PI API
+description: Loads data from PI API with smart pagination, validates dataset quality, and optionally extracts ground truth labels for supervised evaluation. Supports multiple data formats and comprehensive validation.
 
 inputs:
-  - {name: input_path, type: String, description: 'Path to input data file or URL'}
-  - {name: file_format, type: String, default: "auto", description: 'Format: auto, csv, parquet, excel, json, tsv'}
-  - {name: encoding, type: String, default: "utf-8", description: 'File encoding (utf-8, latin1, cp1252)'}
-  - {name: csv_separator, type: String, default: ",", description: 'CSV separator character'}
-  - {name: handle_duplicates, type: String, default: "remove", description: 'Duplicate handling: remove, keep_first, keep_last, keep_all'}
-  - {name: min_samples_threshold, type: Integer, default: "2", description: 'Minimum samples required for clustering'}
-  - {name: validate_clustering_readiness, type: String, default: "true", description: 'Validate data is ready for clustering'}
+  - name: api_url
+    type: String
+    description: 'PI API URL to fetch dataset'
+  - name: access_token
+    type: String
+    description: 'Bearer access token for PI API authentication'
+  - name: target_column
+    type: String
+    description: 'Target column name for ground truth extraction (empty = no ground truth)'
+    default: ''
+  - name: target_mapping
+    type: String
+    description: 'JSON mapping for categorical targets (e.g., {"class_a":0,"class_b":1})'
+    default: '{}'
+  - name: page_size
+    type: String
+    description: 'Number of records per page for pagination'
+    default: '2000'
+  - name: db_type
+    type: String
+    description: 'Database type for PI API (TIDB, MYSQL, etc.)'
+    default: 'TIDB'
 
 outputs:
-  - {name: loaded_data, type: Dataset, description: 'Loaded dataset (parquet)'}
-  - {name: load_metadata, type: Data, description: 'Loading metadata and validation results (JSON)'}
+  - name: data
+    type: Data
+    description: 'Loaded feature data (CSV format)'
+  - name: metadata
+    type: Data
+    description: 'Dataset metadata and validation results (JSON)'
+  - name: ground_truth
+    type: Data
+    description: 'Ground truth labels if target_column specified (NPY format)'
 
 implementation:
   container:
-    image: python:3.9-slim
+    image: nikhilv215/nesy-factory:v23
     command:
       - python3
       - -u
       - -c
       - |
-        import os, sys, json, argparse
-        from pathlib import Path
-        import subprocess
-        
-        # Install dependencies
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", 
-                       "pandas", "numpy", "pyarrow", "openpyxl", "xlrd"], check=True)
-        
+        import os
+        import sys
+        import json
+        import argparse
+        import logging
         import pandas as pd
         import numpy as np
-        from datetime import datetime
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import urllib.parse as urlparse
+        from urllib.parse import urlencode
+        from pathlib import Path
         
-        def ensure_dir(path):
-            d = os.path.dirname(path)
-            if d and not os.path.exists(d):
-                os.makedirs(d, exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger = logging.getLogger('clustering_data_loader')
         
-        def auto_detect_format(path):
-            ext = Path(path).suffix.lower()
-            format_map = {
-                '.csv': 'csv', '.tsv': 'tsv', '.txt': 'csv',
-                '.parquet': 'parquet', '.pq': 'parquet',
-                '.xlsx': 'excel', '.xls': 'excel',
-                '.json': 'json', '.jsonl': 'json', '.ndjson': 'json'
-            }
-            return format_map.get(ext, 'csv')
         
-        def load_data(path, fmt, encoding, sep):
-            print(f"[LOAD] Loading from: {path}")
-            print(f"[LOAD] Format: {fmt}, Encoding: {encoding}, Separator: {repr(sep)}")
+        def ensure_directory_exists(file_path):
+            """Create directory if it doesn't exist"""
+            directory = os.path.dirname(file_path)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
+                logger.info(f"Created directory: {directory}")
+        
+        
+        def fetch_data_from_pi_api(api_url, access_token, page_size, db_type):
+            """
+            Fetch data from PI API with smart pagination
             
-            try:
-                if fmt == 'csv' or fmt == 'tsv':
-                    df = pd.read_csv(path, encoding=encoding, sep=sep, low_memory=False)
-                elif fmt == 'parquet':
-                    df = pd.read_parquet(path)
-                elif fmt == 'excel':
-                    df = pd.read_excel(path)
-                elif fmt == 'json':
-                    # Try both orientations
-                    try:
-                        df = pd.read_json(path, lines=True)
-                    except:
-                        df = pd.read_json(path)
-                else:
-                    raise ValueError(f"Unsupported format: {fmt}")
+            Parameters:
+            -----------
+            api_url : str
+                PI API endpoint URL
+            access_token : str
+                Bearer token for authentication
+            page_size : int
+                Records per page
+            db_type : str
+                Database type (TIDB, MYSQL, etc.)
+            
+            Returns:
+            --------
+            pd.DataFrame
+                Complete dataset from all pages
+            """
+            logger.info("="*80)
+            logger.info("FETCHING DATA FROM PI API")
+            logger.info("="*80)
+            logger.info(f"API URL: {api_url}")
+            logger.info(f"Page size: {page_size}")
+            logger.info(f"DB Type: {db_type}")
+            logger.info("")
+            
+            # Read token from file if it's a path
+            if os.path.exists(access_token):
+                with open(access_token, 'r') as f:
+                    access_token = f.read().strip()
+                logger.info("Access token loaded from file")
+            
+            # Setup session with retry logic
+            session = requests.Session()
+            retries = Retry(
+                total=5,
+                backoff_factor=1,
+                status_forcelist=[500, 502, 503, 504]
+            )
+            session.mount("https://", HTTPAdapter(max_retries=retries))
+            session.mount("http://", HTTPAdapter(max_retries=retries))
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}"
+            }
+            
+            # Parse URL and prepare pagination
+            parsed_url = urlparse.urlparse(api_url)
+            url_params = urlparse.parse_qs(parsed_url.query)
+            url_params.pop('page', None)
+            url_params.pop('size', None)
+            
+            all_records = []
+            current_page = 0
+            fetching = True
+            
+            logger.info("Starting pagination...")
+            
+            while fetching:
+                # Update pagination parameters
+                url_params['page'] = [str(current_page)]
+                url_params['size'] = [str(page_size)]
+                new_query = urlencode(url_params, doseq=True)
+                request_url = parsed_url._replace(query=new_query).geturl()
                 
-                print(f"[LOAD] ✓ Loaded: {df.shape[0]} rows × {df.shape[1]} columns")
-                return df
+                payload = {
+                    "dbType": db_type,
+                    "limit": page_size,
+                    "offset": current_page * page_size
+                }
                 
-            except Exception as e:
-                print(f"[LOAD] ✗ Error: {str(e)}", file=sys.stderr)
-                raise
+                try:
+                    logger.info(f"[Page {current_page}] Requesting...")
+                    
+                    resp = session.post(
+                        request_url,
+                        headers=headers,
+                        json=payload,
+                        timeout=60
+                    )
+                    resp.raise_for_status()
+                    
+                    json_response = resp.json()
+                    
+                    # Handle different response structures
+                    if isinstance(json_response, dict):
+                        batch = json_response.get(
+                            'content',
+                            json_response.get(
+                                'data',
+                                json_response.get('instances', [])
+                            )
+                        )
+                    else:
+                        batch = json_response
+                    
+                    batch_len = len(batch) if isinstance(batch, list) else 0
+                    
+                    if batch_len == 0:
+                        logger.info(f"[Page {current_page}] No records returned, stopping")
+                        fetching = False
+                    else:
+                        all_records.extend(batch)
+                        logger.info(
+                            f"[Page {current_page}] Fetched {batch_len} records. "
+                            f"Total: {len(all_records)}"
+                        )
+                        
+                        if batch_len < page_size:
+                            logger.info("Received less than page_size, stopping")
+                            fetching = False
+                        else:
+                            current_page += 1
+                
+                except requests.exceptions.HTTPError as e:
+                    logger.error(f"HTTP Error: {e}")
+                    logger.error(f"Response: {resp.text if 'resp' in locals() else 'N/A'}")
+                    raise
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Request Error: {e}")
+                    raise
+                except Exception as e:
+                    logger.error(f"Unexpected Error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            
+            logger.info("")
+            logger.info(f"Pagination complete: {len(all_records)} total records")
+            logger.info("")
+            
+            if not all_records:
+                raise ValueError("No records fetched from PI API")
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(all_records)
+            logger.info(f"Created DataFrame: {df.shape[0]} rows x {df.shape[1]} columns")
+            
+            return df
         
-        def validate_for_clustering(df, min_samples):
+        
+        def extract_ground_truth(df, target_column, target_mapping_json):
+            """
+            Extract and encode ground truth labels for supervised evaluation
+            
+            Parameters:
+            -----------
+            df : pd.DataFrame
+                Input dataframe
+            target_column : str
+                Name of target column (empty string = no ground truth)
+            target_mapping_json : str
+                JSON string with custom label mapping
+            
+            Returns:
+            --------
+            df_features : pd.DataFrame
+                Features without target column
+            ground_truth : np.ndarray or None
+                Encoded ground truth labels
+            ground_truth_info : dict or None
+                Metadata about ground truth
+            """
+            if not target_column or target_column == '':
+                logger.info("No target column specified - skipping ground truth extraction")
+                return df, None, None
+            
+            logger.info("="*80)
+            logger.info("EXTRACTING GROUND TRUTH")
+            logger.info("="*80)
+            logger.info(f"Target column: '{target_column}'")
+            
+            # Validate column exists
+            if target_column not in df.columns:
+                available_cols = ', '.join(df.columns.tolist())
+                raise ValueError(
+                    f"Target column '{target_column}' not found. "
+                    f"Available columns: {available_cols}"
+                )
+            
+            # Extract target
+            target_series = df[target_column].copy()
+            logger.info(f"Found {len(target_series)} target values")
+            
+            # Parse custom mapping
+            target_mapping = {}
+            if target_mapping_json and target_mapping_json != '{}':
+                try:
+                    target_mapping = json.loads(target_mapping_json)
+                    logger.info(f"Using custom mapping: {target_mapping}")
+                except json.JSONDecodeError:
+                    logger.warning("Invalid target_mapping JSON, will auto-encode")
+                    target_mapping = {}
+            
+            # Build metadata
+            ground_truth_info = {
+                'column_name': target_column,
+                'n_samples': int(len(target_series)),
+                'unique_values': target_series.unique().tolist()[:50],  # Limit to 50 for large datasets
+                'n_unique': int(target_series.nunique()),
+                'dtype': str(target_series.dtype)
+            }
+            
+            # Encode labels
+            if pd.api.types.is_numeric_dtype(target_series):
+                logger.info("Target column is already numeric")
+                ground_truth_encoded = target_series.values
+                ground_truth_info['encoding'] = 'none (already numeric)'
+                ground_truth_info['mapping'] = {}
+            
+            elif target_mapping:
+                logger.info("Applying custom mapping")
+                ground_truth_encoded = target_series.map(target_mapping).values
+                
+                # Check for unmapped values
+                if pd.isna(ground_truth_encoded).any():
+                    unmapped = target_series[pd.isna(ground_truth_encoded)].unique()
+                    raise ValueError(
+                        f"Custom mapping incomplete. Unmapped values: {unmapped.tolist()}"
+                    )
+                
+                ground_truth_info['encoding'] = 'custom'
+                ground_truth_info['mapping'] = target_mapping
+            
+            else:
+                logger.info("Auto-encoding categorical target")
+                unique_vals = sorted(target_series.unique())
+                auto_mapping = {val: idx for idx, val in enumerate(unique_vals)}
+                ground_truth_encoded = target_series.map(auto_mapping).values
+                
+                ground_truth_info['encoding'] = 'auto (alphabetical)'
+                ground_truth_info['mapping'] = auto_mapping
+                logger.info(f"Auto-generated mapping: {auto_mapping}")
+            
+            # Convert to integer
+            ground_truth_encoded = ground_truth_encoded.astype(int)
+            ground_truth_info['encoded_range'] = [
+                int(ground_truth_encoded.min()), 
+                int(ground_truth_encoded.max())
+            ]
+            ground_truth_info['encoded_unique'] = int(len(np.unique(ground_truth_encoded)))
+            
+            # Log distribution
+            logger.info("Ground truth distribution:")
+            for label in np.unique(ground_truth_encoded):
+                count = np.sum(ground_truth_encoded == label)
+                pct = count / len(ground_truth_encoded) * 100
+                logger.info(f"  Class {label}: {count:>6} samples ({pct:>5.1f}%)")
+            
+            # Remove target from features
+            df_features = df.drop(columns=[target_column])
+            logger.info(f"Removed target column: {df_features.shape[1]} features remain")
+            logger.info("")
+            
+            return df_features, ground_truth_encoded, ground_truth_info
+        
+        
+        def validate_dataset(df):
+            """
+            Validate dataset quality and characteristics
+            
+            Parameters:
+            -----------
+            df : pd.DataFrame
+                Dataset to validate
+            
+            Returns:
+            --------
+            validation : dict
+                Validation results
+            metadata : dict
+                Dataset metadata
+            """
+            logger.info("="*80)
+            logger.info("VALIDATING DATASET")
+            logger.info("="*80)
+            
             validation = {
                 'is_valid': True,
                 'errors': [],
-                'warnings': [],
-                'checks_passed': []
+                'warnings': []
             }
             
-            # Check 1: Empty dataset
+            # Check emptiness
             if df.empty:
                 validation['is_valid'] = False
                 validation['errors'].append("Dataset is empty")
-                return validation
+                logger.error("Dataset is empty")
+                return validation, {}
             
-            validation['checks_passed'].append(f"Dataset has {len(df)} samples")
-            
-            # Check 2: Minimum samples for clustering
-            if len(df) < min_samples:
+            if len(df) < 2:
                 validation['is_valid'] = False
-                validation['errors'].append(f"Need at least {min_samples} samples for clustering (got {len(df)})")
-                return validation
+                validation['errors'].append("Need at least 2 samples for clustering")
+                logger.error(f"Insufficient samples: {len(df)}")
+                return validation, {}
             
-            validation['checks_passed'].append(f"Minimum samples threshold met ({len(df)} >= {min_samples})")
+            logger.info(f"Dataset has {len(df)} samples")
             
-            # Check 3: Duplicate columns
+            # Check duplicate columns
             if df.columns.duplicated().any():
-                dup_cols = df.columns[df.columns.duplicated()].tolist()
-                validation['warnings'].append(f"Duplicate column names: {dup_cols}")
-            else:
-                validation['checks_passed'].append("No duplicate column names")
+                validation['warnings'].append("Duplicate column names detected")
+                logger.warning("Duplicate column names found")
             
-            # Check 4: Identify column types
+            # Analyze column types
             numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
             categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
             
-            validation['numeric_columns'] = numeric_cols
-            validation['categorical_columns'] = categorical_cols
-            validation['checks_passed'].append(f"Found {len(numeric_cols)} numeric columns")
-            validation['checks_passed'].append(f"Found {len(categorical_cols)} categorical columns")
+            logger.info(f"Numeric columns: {len(numeric_cols)}")
+            logger.info(f"Categorical columns: {len(categorical_cols)}")
             
-            if len(numeric_cols) == 0 and len(categorical_cols) == 0:
-                validation['is_valid'] = False
-                validation['errors'].append("No valid columns found")
-                return validation
+            if len(numeric_cols) == 0:
+                validation['warnings'].append("No numeric columns found")
+                logger.warning("No numeric columns for clustering")
             
-            # Check 5: Constant columns (problematic for clustering)
-            constant_cols = [col for col in df.columns if df[col].nunique(dropna=True) <= 1]
-            if constant_cols:
-                validation['warnings'].append(f"Constant columns detected (will be removed): {constant_cols}")
-            else:
-                validation['checks_passed'].append("No constant columns")
-            
-            # Check 6: Missing values
+            # Check missing values
             missing_total = df.isnull().sum().sum()
-            missing_pct = (missing_total / (df.shape[0] * df.shape[1])) * 100 if df.size > 0 else 0
+            missing_pct = (missing_total / (df.shape[0] * df.shape[1])) * 100 if df.shape[0] * df.shape[1] > 0 else 0
             
+            missing_by_col = {}
             if missing_total > 0:
-                validation['warnings'].append(f"Missing values: {missing_total} ({missing_pct:.2f}%)")
-                missing_by_col = {}
+                msg = f"Found {missing_total} missing values ({missing_pct:.2f}%)"
+                validation['warnings'].append(msg)
+                logger.warning(msg)
+                
                 for col in df.columns:
                     miss_count = df[col].isnull().sum()
                     if miss_count > 0:
-                        missing_by_col[col] = {
-                            'count': int(miss_count),
-                            'percentage': float(miss_count / len(df) * 100)
-                        }
-                validation['missing_by_column'] = missing_by_col
+                        missing_by_col[col] = int(miss_count)
+                        miss_pct = miss_count/len(df)*100
+                        logger.info(f"  {col}: {miss_count} ({miss_pct:.1f}%)")
             else:
-                validation['checks_passed'].append("No missing values")
+                logger.info("No missing values")
             
-            # Check 7: Infinite values in numeric columns
+            # Check infinite values in numeric columns
             inf_count = 0
+            inf_by_col = {}
             for col in numeric_cols:
                 col_inf = df[col].isin([np.inf, -np.inf]).sum()
-                inf_count += col_inf
+                if col_inf > 0:
+                    inf_by_col[col] = int(col_inf)
+                    inf_count += col_inf
             
             if inf_count > 0:
-                validation['warnings'].append(f"Infinite values: {inf_count}")
+                msg = f"Found {inf_count} infinite values"
+                validation['warnings'].append(msg)
+                logger.warning(msg)
+                for col, count in inf_by_col.items():
+                    logger.info(f"  {col}: {count}")
             else:
-                validation['checks_passed'].append("No infinite values")
+                logger.info("No infinite values")
             
-            # Check 8: All-NaN columns
-            all_nan_cols = [col for col in df.columns if df[col].isna().all()]
-            if all_nan_cols:
-                validation['warnings'].append(f"All-NaN columns (will be removed): {all_nan_cols}")
-            
-            return validation
-        
-        def handle_duplicates(df, strategy):
-            before = len(df)
-            
-            if strategy == 'remove':
-                df = df.drop_duplicates(keep='first')
-            elif strategy == 'keep_first':
-                df = df.drop_duplicates(keep='first')
-            elif strategy == 'keep_last':
-                df = df.drop_duplicates(keep='last')
-            elif strategy == 'keep_all':
-                pass  # Do nothing
+            # Check constant columns
+            constant_cols = [col for col in df.columns if df[col].nunique() <= 1]
+            if constant_cols:
+                msg = f"Constant columns found: {len(constant_cols)}"
+                validation['warnings'].append(msg)
+                logger.warning(msg)
+                logger.info(f"  Constant columns: {constant_cols}")
             else:
-                raise ValueError(f"Invalid duplicate strategy: {strategy}")
+                logger.info("No constant columns")
             
-            after = len(df)
-            removed = before - after
+            # Check high cardinality
+            high_cardinality_cols = []
+            for col in categorical_cols:
+                unique_count = df[col].nunique()
+                if unique_count > 0.5 * len(df):
+                    high_cardinality_cols.append(col)
             
-            return df.reset_index(drop=True), removed
-        
-        def collect_statistics(df):
-            stats = {
-                'shape': {'rows': int(df.shape[0]), 'cols': int(df.shape[1])},
+            if high_cardinality_cols:
+                msg = f"High cardinality categorical columns: {high_cardinality_cols}"
+                validation['warnings'].append(msg)
+                logger.warning(msg)
+            
+            # Build metadata
+            metadata = {
+                'n_samples': int(df.shape[0]),
+                'n_features': int(df.shape[1]),
                 'columns': list(df.columns),
                 'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
+                'numeric_columns': numeric_cols,
+                'categorical_columns': categorical_cols,
+                'missing_values': {
+                    'total': int(missing_total),
+                    'percentage': float(missing_pct),
+                    'by_column': missing_by_col
+                },
+                'infinite_values': {
+                    'total': int(inf_count),
+                    'by_column': inf_by_col
+                },
+                'constant_columns': constant_cols,
+                'high_cardinality_columns': high_cardinality_cols,
                 'memory_mb': float(df.memory_usage(deep=True).sum() / 1024**2)
             }
             
-            # Numeric statistics
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            # Add statistics for numeric columns (sample of first 20 for performance)
             if numeric_cols:
-                stats['numeric_stats'] = {}
-                for col in numeric_cols:
+                metadata['statistics'] = {}
+                sample_cols = numeric_cols[:20]
+                for col in sample_cols:
                     try:
-                        stats['numeric_stats'][col] = {
-                            'count': int(df[col].count()),
+                        metadata['statistics'][col] = {
                             'mean': float(df[col].mean()),
                             'std': float(df[col].std()),
                             'min': float(df[col].min()),
-                            'q25': float(df[col].quantile(0.25)),
-                            'median': float(df[col].median()),
-                            'q75': float(df[col].quantile(0.75)),
                             'max': float(df[col].max()),
-                            'unique': int(df[col].nunique())
+                            'median': float(df[col].median()),
+                            'q25': float(df[col].quantile(0.25)),
+                            'q75': float(df[col].quantile(0.75))
                         }
                     except:
+                        logger.warning(f"Could not compute statistics for {col}")
                         pass
-            
-            # Categorical statistics
-            categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-            if categorical_cols:
-                stats['categorical_stats'] = {}
-                for col in categorical_cols[:10]:  # Limit to first 10
-                    try:
-                        stats['categorical_stats'][col] = {
-                            'unique': int(df[col].nunique()),
-                            'top_values': df[col].value_counts().head(5).to_dict()
-                        }
-                    except:
-                        pass
-            
-            return stats
-        
-        # Main execution
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--input_path', type=str, required=True)
-        parser.add_argument('--file_format', type=str, default='auto')
-        parser.add_argument('--encoding', type=str, default='utf-8')
-        parser.add_argument('--csv_separator', type=str, default=',')
-        parser.add_argument('--handle_duplicates', type=str, default='remove')
-        parser.add_argument('--min_samples_threshold', type=int, default=2)
-        parser.add_argument('--validate_clustering_readiness', type=str, default='true')
-        parser.add_argument('--loaded_data', type=str, required=True)
-        parser.add_argument('--load_metadata', type=str, required=True)
-        args = parser.parse_args()
-        
-        try:
-            print("=" * 80)
-            print("CLUSTERING PREPROCESSING - COMPONENT 1: DATA LOADING")
-            print("=" * 80)
-            
-            # Auto-detect format
-            if args.file_format == 'auto':
-                file_format = auto_detect_format(args.input_path)
-            else:
-                file_format = args.file_format
-            
-            # Load data
-            df = load_data(args.input_path, file_format, args.encoding, args.csv_separator)
-            
-            # Handle duplicates
-            dup_strategy = args.handle_duplicates.lower()
-            df, removed_dups = handle_duplicates(df, dup_strategy)
-            if removed_dups > 0:
-                print(f"[CLEAN] Removed {removed_dups} duplicate rows")
-            
-            # Validate for clustering
-            validate = args.validate_clustering_readiness.lower() in ('true', '1', 'yes', 't')
-            if validate:
-                validation = validate_for_clustering(df, args.min_samples_threshold)
                 
-                print(f"\n[VALIDATE] Clustering Readiness Check:")
-                for check in validation['checks_passed']:
-                    print(f"  ✓ {check}")
-                for warning in validation['warnings']:
-                    print(f"  ⚠ {warning}")
-                for error in validation['errors']:
-                    print(f"  ✗ {error}")
+                if len(numeric_cols) > 20:
+                    logger.info(f"Statistics computed for first 20 numeric columns (of {len(numeric_cols)})")
+            
+            metadata['validation'] = validation
+            
+            logger.info("")
+            logger.info("Validation Summary:")
+            logger.info(f"  Valid: {validation['is_valid']}")
+            logger.info(f"  Errors: {len(validation['errors'])}")
+            logger.info(f"  Warnings: {len(validation['warnings'])}")
+            logger.info("")
+            
+            return validation, metadata
+        
+        
+        def main():
+            parser = argparse.ArgumentParser(
+                description="Generic Data Loading Component with PI API"
+            )
+            parser.add_argument("--api_url", required=True,
+                               help="PI API URL to fetch dataset")
+            parser.add_argument("--access_token", required=True,
+                               help="Bearer access token for PI API")
+            parser.add_argument("--target_column", default='',
+                               help="Target column for ground truth (optional)")
+            parser.add_argument("--target_mapping", default='{}',
+                               help="JSON mapping for categorical targets")
+            parser.add_argument("--page_size", default='2000',
+                               help="Records per page for pagination")
+            parser.add_argument("--db_type", default='TIDB',
+                               help="Database type for PI API")
+            parser.add_argument("--output_data", required=True,
+                               help="Output path for feature data")
+            parser.add_argument("--output_metadata", required=True,
+                               help="Output path for metadata JSON")
+            parser.add_argument("--output_ground_truth", required=True,
+                               help="Output path for ground truth labels")
+            
+            args = parser.parse_args()
+            
+            logger.info("="*80)
+            logger.info("CLUSTERING DATA LOADING COMPONENT")
+            logger.info("="*80)
+            logger.info(f"API URL: {args.api_url}")
+            logger.info(f"DB Type: {args.db_type}")
+            logger.info(f"Page Size: {args.page_size}")
+            logger.info(f"Target column: {args.target_column if args.target_column else 'None'}")
+            logger.info("")
+            
+            try:
+                # Ensure output directories exist
+                ensure_directory_exists(args.output_data)
+                ensure_directory_exists(args.output_metadata)
+                ensure_directory_exists(args.output_ground_truth)
+                
+                # Convert page_size to int
+                page_size = int(args.page_size)
+                
+                # Fetch data from PI API
+                df = fetch_data_from_pi_api(
+                    api_url=args.api_url,
+                    access_token=args.access_token,
+                    page_size=page_size,
+                    db_type=args.db_type
+                )
+                
+                # Extract ground truth if specified
+                df_features, ground_truth, ground_truth_info = extract_ground_truth(
+                    df=df,
+                    target_column=args.target_column,
+                    target_mapping_json=args.target_mapping
+                )
+                
+                # Validate dataset
+                validation, metadata = validate_dataset(df_features)
                 
                 if not validation['is_valid']:
-                    print("\n[VALIDATE] ✗ Validation FAILED")
+                    logger.error("="*80)
+                    logger.error("VALIDATION FAILED")
+                    logger.error("="*80)
+                    for error in validation['errors']:
+                        logger.error(f"Error: {error}")
                     sys.exit(1)
                 
-                print("\n[VALIDATE] ✓ Data is ready for clustering preprocessing")
-            else:
-                validation = {'is_valid': True, 'errors': [], 'warnings': [], 'checks_passed': ['Validation skipped']}
-            
-            # Collect statistics
-            statistics = collect_statistics(df)
-            
-            # Save outputs
-            print(f"\n[SAVE] Saving outputs...")
-            ensure_dir(args.loaded_data)
-            ensure_dir(args.load_metadata)
-            
-            df.to_parquet(args.loaded_data, index=False)
-            print(f"  ✓ Data: {args.loaded_data}")
-            
-            metadata = {
-                'timestamp': datetime.utcnow().isoformat() + 'Z',
-                'component': 'data_loader',
-                'input_path': args.input_path,
-                'file_format': file_format,
-                'encoding': args.encoding,
-                'duplicates_removed': removed_dups,
-                'validation': validation,
-                'statistics': statistics
-            }
-            
-            with open(args.load_metadata, 'w') as f:
-                json.dump(metadata, f, indent=2)
-            print(f"  ✓ Metadata: {args.load_metadata}")
-            
-            print("\n" + "=" * 80)
-            print("COMPONENT 1 COMPLETE")
-            print("=" * 80)
-            print(f"Final shape: {df.shape[0]} rows × {df.shape[1]} columns")
-            print(f"Numeric columns: {len(validation.get('numeric_columns', []))}")
-            print(f"Categorical columns: {len(validation.get('categorical_columns', []))}")
-            print("=" * 80 + "\n")
-            
-        except Exception as e:
-            print(f"\n[ERROR] {str(e)}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
-            sys.exit(1)
-    
+                if validation['warnings']:
+                    logger.warning(f"Found {len(validation['warnings'])} warnings")
+                    for warning in validation['warnings']:
+                        logger.warning(f"  - {warning}")
+                
+                # Add ground truth info to metadata
+                if ground_truth_info:
+                    metadata['ground_truth'] = ground_truth_info
+                
+                # Add API info to metadata
+                metadata['data_source'] = {
+                    'type': 'PI_API',
+                    'api_url': args.api_url,
+                    'db_type': args.db_type,
+                    'page_size': page_size
+                }
+                
+                # Save feature data
+                df_features.to_csv(args.output_data, index=False)
+                logger.info(f"Feature data saved: {args.output_data}")
+                logger.info(f"  Shape: {df_features.shape}")
+                
+                # Save metadata
+                with open(args.output_metadata, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+                logger.info(f"Metadata saved: {args.output_metadata}")
+                
+                # Save ground truth
+                if ground_truth is not None:
+                    np.save(args.output_ground_truth, ground_truth, allow_pickle=False)
+                    logger.info(f"Ground truth saved: {args.output_ground_truth}")
+                    logger.info(f"  Shape: {ground_truth.shape}")
+                else:
+                    # Create empty marker file
+                    with open(args.output_ground_truth, 'w') as f:
+                        f.write("")
+                    logger.info("No ground truth (empty marker file created)")
+                
+                logger.info("")
+                logger.info("="*80)
+                logger.info("DATA LOADING COMPLETED SUCCESSFULLY")
+                logger.info("="*80)
+                logger.info(f"Samples: {metadata['n_samples']}")
+                logger.info(f"Features: {metadata['n_features']}")
+                logger.info(f"  - Numeric: {len(metadata['numeric_columns'])}")
+                logger.info(f"  - Categorical: {len(metadata['categorical_columns'])}")
+                if ground_truth_info:
+                    logger.info(f"Ground truth: {ground_truth_info['n_unique']} classes")
+                logger.info(f"Memory: {metadata['memory_mb']:.2f} MB")
+                logger.info("="*80)
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"API REQUEST ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+            except ValueError as e:
+                logger.error(f"VALIDATION ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+            except Exception as e:
+                logger.error(f"ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+        
+        
+        if __name__ == "__main__":
+            main()
     args:
-      - --input_path
-      - {inputValue: input_path}
-      - --file_format
-      - {inputValue: file_format}
-      - --encoding
-      - {inputValue: encoding}
-      - --csv_separator
-      - {inputValue: csv_separator}
-      - --handle_duplicates
-      - {inputValue: handle_duplicates}
-      - --min_samples_threshold
-      - {inputValue: min_samples_threshold}
-      - --validate_clustering_readiness
-      - {inputValue: validate_clustering_readiness}
-      - --loaded_data
-      - {outputPath: loaded_data}
-      - --load_metadata
-      - {outputPath: load_metadata}
+      - --api_url
+      - {inputValue: api_url}
+      - --access_token
+      - {inputValue: access_token}
+      - --target_column
+      - {inputValue: target_column}
+      - --target_mapping
+      - {inputValue: target_mapping}
+      - --page_size
+      - {inputValue: page_size}
+      - --db_type
+      - {inputValue: db_type}
+      - --output_data
+      - {outputPath: data}
+      - --output_metadata
+      - {outputPath: metadata}
+      - --output_ground_truth
+      - {outputPath: ground_truth}
