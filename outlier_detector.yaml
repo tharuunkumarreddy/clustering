@@ -63,7 +63,7 @@ implementation:
         
         
         def ensure_directory_exists(file_path):
-            #Create directory if it doesn't exist#
+            # Create directory if it doesn't exist
             directory = os.path.dirname(file_path)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory, exist_ok=True)
@@ -71,7 +71,7 @@ implementation:
         
         
         def load_data(input_path):
-            #Load data from CSV or Parquet file#
+            # Load data from CSV or Parquet file
             logger.info(f"Loading dataset from: {input_path}")
             
             ext = Path(input_path).suffix.lower()
@@ -93,25 +93,9 @@ implementation:
         
         
         def detect_outliers(df, method, detection_params):
-            #
-            Detect outliers using specified method
-            
-            Parameters:
-            -----------
-            df : pd.DataFrame
-                Input dataset
-            method : str
-                Detection method: 'zscore', 'iqr', 'lof', 'isolation_forest'
-            detection_params : dict
-                Method-specific parameters
-            
-            Returns:
-            --------
-            outlier_mask : pd.Series
-                Boolean mask (True = outlier)
-            detection_info : dict
-                Detection metadata and scores
-            #
+            # Detect outliers using specified method
+            # Parameters: df, method, detection_params
+            # Returns: outlier_mask (boolean series), detection_info (dict)
             logger.info("="*80)
             logger.info("DETECTING OUTLIERS")
             logger.info("="*80)
@@ -156,7 +140,7 @@ implementation:
                 outlier_mask = (z_scores > threshold).any(axis=1)
                 
                 detection_info['threshold'] = threshold
-                detection_info['max_z_score_per_sample'] = z_scores.max(axis=1).tolist()[:100]  # Limit size
+                detection_info['max_z_score_per_sample'] = z_scores.max(axis=1).tolist()[:100]
                 
                 # Per-column outlier counts
                 logger.info("Per-column outlier counts:")
@@ -231,7 +215,7 @@ implementation:
                 
                 outlier_mask = pd.Series(outlier_labels == -1, index=df.index)
                 
-                detection_info['lof_scores_sample'] = lof_scores.tolist()[:100]  # Limit size
+                detection_info['lof_scores_sample'] = lof_scores.tolist()[:100]
                 detection_info['n_neighbors'] = n_neighbors
                 detection_info['contamination'] = contamination
                 detection_info['lof_score_mean'] = float(lof_scores.mean())
@@ -263,7 +247,7 @@ implementation:
                 
                 outlier_mask = pd.Series(outlier_labels == -1, index=df.index)
                 
-                detection_info['anomaly_scores_sample'] = anomaly_scores.tolist()[:100]  # Limit size
+                detection_info['anomaly_scores_sample'] = anomaly_scores.tolist()[:100]
                 detection_info['contamination'] = contamination
                 detection_info['n_estimators'] = n_estimators
                 detection_info['random_state'] = random_state
@@ -290,29 +274,9 @@ implementation:
         
         
         def handle_outliers(df, outlier_mask, method, handling_params, detection_info):
-            #
-            Handle detected outliers
-            
-            Parameters:
-            -----------
-            df : pd.DataFrame
-                Input dataset
-            outlier_mask : pd.Series
-                Boolean mask of outliers
-            method : str
-                Handling method
-            handling_params : dict
-                Method-specific parameters
-            detection_info : dict
-                Information from detection phase
-            
-            Returns:
-            --------
-            df_handled : pd.DataFrame
-                Dataset with outliers handled
-            handling_stats : dict
-                Statistics about handling
-            #
+            # Handle detected outliers
+            # Parameters: df, outlier_mask, method, handling_params, detection_info
+            # Returns: df_handled, handling_stats (dict)
             logger.info("="*80)
             logger.info("HANDLING OUTLIERS")
             logger.info("="*80)
@@ -340,7 +304,7 @@ implementation:
                 removed_indices = df[outlier_mask].index.tolist()
                 df_handled = df[~outlier_mask].reset_index(drop=True)
                 stats['n_rows_removed'] = len(removed_indices)
-                stats['removed_indices_sample'] = removed_indices[:100]  # Limit size
+                stats['removed_indices_sample'] = removed_indices[:100]
                 logger.info(f"Removed {len(removed_indices)} outlier rows")
                 logger.info(f"Remaining rows: {len(df_handled)}")
             
@@ -365,7 +329,7 @@ implementation:
                             'upper': float(Q3 + factor * IQR)
                         }
                 else:
-                    # Use min/max (no clipping really)
+                    # Use min/max (no effective clipping)
                     logger.info("Using min/max as bounds (no effective clipping)")
                     bounds = {}
                     for col in numeric_cols:
@@ -499,7 +463,7 @@ implementation:
                                help="Outlier handling method")
             parser.add_argument("--handling_params", type=str, default='{}',
                                help="Handling method parameters as JSON")
-            parser.add_argument("--output_output_data", required=True,
+            parser.add_argument("--output_data", required=True,
                                help="Output path for processed dataset")
             parser.add_argument("--output_outlier_info", required=True,
                                help="Output path for outlier information")
@@ -518,7 +482,7 @@ implementation:
             
             try:
                 # Ensure output directories
-                ensure_directory_exists(args.output_output_data)
+                ensure_directory_exists(args.output_data)
                 ensure_directory_exists(args.output_outlier_info)
                 ensure_directory_exists(args.output_report)
                 
@@ -557,8 +521,8 @@ implementation:
                 )
                 
                 # Save processed data
-                df_handled.to_csv(args.output_output_data, index=False)
-                logger.info(f"Processed data saved: {args.output_output_data}")
+                df_handled.to_csv(args.output_data, index=False)
+                logger.info(f"Processed data saved: {args.output_data}")
                 
                 # Save outlier information (including mask for reference)
                 detection_info['outlier_mask'] = outlier_mask
@@ -632,5 +596,3 @@ implementation:
       - {outputPath: outlier_info}
       - --output_report
       - {outputPath: report}
-
-
