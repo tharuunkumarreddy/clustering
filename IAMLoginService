@@ -1,0 +1,154 @@
+name: IAMLoginService
+description: Authenticates a user and extracts accessToken, refreshToken, and related metadata from the IAM login response.
+inputs:
+  - {name: userName, type: String, description: "User name for authentication"}
+  - {name: password, type: String, description: "Password for authentication"}
+  - {name: productId, type: String, description: "Product identifier"}
+  - {name: requestType, type: String, description: "Type of authentication request"}
+  - {name: domine, type: String, description: "IAM service domain/URL"}
+
+outputs:
+  - {name: accessToken, type: String, description: "Access token from authentication"}
+  - {name: expiresIn, type: String, description: "Token expiration time"}
+  - {name: refreshToken, type: String, description: "Refresh token for renewing access"}
+  - {name: tenantId, type: String, description: "Tenant identifier"}
+  - {name: platformId, type: String, description: "Platform identifier"}
+
+implementation:
+  container:
+    image: python:3.8
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |-
+        import requests
+        import json
+        import argparse
+        import os
+        import sys
+        import traceback
+
+        # Helper function for writing output files
+        def write_output(path, value):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(str(value))
+
+        parser = argparse.ArgumentParser()
+        # Input arguments
+        parser.add_argument("--userName", type=str, required=True)
+        parser.add_argument("--password", type=str, required=True)
+        parser.add_argument("--productId", type=str, required=True)
+        parser.add_argument("--requestType", type=str, required=True)
+        parser.add_argument("--domine", type=str, required=True)
+        # Output arguments (paths where to write outputs)
+        parser.add_argument("--accessToken", type=str, required=True)
+        parser.add_argument("--expiresIn", type=str, required=True)
+        parser.add_argument("--refreshToken", type=str, required=True)
+        parser.add_argument("--tenantId", type=str, required=True)
+        parser.add_argument("--platformId", type=str, required=True)
+        args = parser.parse_args()
+
+        try:
+            print("="*80)
+            print("IAM LOGIN SERVICE")
+            print("="*80)
+            
+            # Prepare request
+            url = f"{args.domine}/mobius-iam-service/v1.0/login"
+            headers = {
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "userName": args.userName,
+                "password": args.password,
+                "productId": args.productId,
+                "requestType": args.requestType
+            }
+
+            print(f"[INFO] Sending POST request to: {url}")
+            print(f"[INFO] Request payload: {json.dumps(payload, indent=2)}")
+            
+            # Make API call
+            response = requests.post(url, headers=headers, json=payload)
+            print(f"[INFO] Status Code: {response.status_code}")
+            
+            # Handle response
+            if response.status_code != 200:
+                print(f"[ERROR] Request failed with status: {response.status_code}")
+                print(f"[ERROR] Response: {response.text}")
+                sys.exit(1)
+            
+            result = response.json()
+            print(f"[INFO] Response received successfully")
+            
+            # Extract values from response
+            access_token = result.get("accessToken", "")
+            expires_in = result.get("expiresIn", "")
+            refresh_token = result.get("refreshToken", "")
+            tenant_id = result.get("tenantId", "")
+            platform_id = result.get("platformId", "")
+            
+            # Write outputs to files
+            print("[INFO] Writing outputs...")
+            write_output(args.accessToken, access_token)
+            write_output(args.expiresIn, expires_in)
+            write_output(args.refreshToken, refresh_token)
+            write_output(args.tenantId, tenant_id)
+            write_output(args.platformId, platform_id)
+            
+            # Summary
+            print("="*80)
+            print("IAM LOGIN COMPLETE - SUMMARY")
+            print("="*80)
+            print(f"Access Token: {'✓ Present' if access_token else '✗ Missing'} (length: {len(access_token)})")
+            print(f"Expires In: {expires_in}")
+            print(f"Refresh Token: {'✓ Present' if refresh_token else '✗ Missing'} (length: {len(refresh_token)})")
+            print(f"Tenant ID: {tenant_id}")
+            print(f"Platform ID: {platform_id}")
+            print("="*80)
+            print("SUCCESS: Authentication completed successfully!")
+            print("="*80)
+            
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Network request failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Invalid JSON response: {e}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"[ERROR] Unexpected error: {e}", file=sys.stderr)
+            traceback.print_exc()
+            sys.exit(1)
+
+    args:
+      # Input mappings
+      - --userName
+      - {inputValue: userName}
+      - --password
+      - {inputValue: password}
+      - --productId
+      - {inputValue: productId}
+      - --requestType
+      - {inputValue: requestType}
+      - --domine
+      - {inputValue: domine}
+      # Output mappings
+      - --accessToken
+      - {outputPath: accessToken}
+      - --expiresIn
+      - {outputPath: expiresIn}
+      - --refreshToken
+      - {outputPath: refreshToken}
+      - --tenantId
+      - {outputPath: tenantId}
+      - --platformId
+      - {outputPath: platformId}
