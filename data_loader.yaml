@@ -74,7 +74,7 @@ implementation:
         
         
         def ensure_directory_exists(file_path):
-            #Create directory if it doesn't exist#
+            # Create directory if it doesn't exist
             directory = os.path.dirname(file_path)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory, exist_ok=True)
@@ -82,25 +82,9 @@ implementation:
         
         
         def fetch_data_from_pi_api(api_url, access_token, page_size, db_type):
-            #
-            Fetch data from PI API with smart pagination
-            
-            Parameters:
-            -----------
-            api_url : str
-                PI API endpoint URL
-            access_token : str
-                Bearer token for authentication
-            page_size : int
-                Records per page
-            db_type : str
-                Database type (TIDB, MYSQL, etc.)
-            
-            Returns:
-            --------
-            pd.DataFrame
-                Complete dataset from all pages
-            #
+            # Fetch data from PI API with smart pagination
+            # Parameters: api_url, access_token, page_size, db_type
+            # Returns: pd.DataFrame with complete dataset from all pages
             logger.info("="*80)
             logger.info("FETCHING DATA FROM PI API")
             logger.info("="*80)
@@ -226,25 +210,9 @@ implementation:
         
         
         def select_features(df, feature_columns, exclude_columns):
-            #
-            Select specific features or exclude unwanted columns
-            
-            Parameters:
-            -----------
-            df : pd.DataFrame
-                Input dataframe
-            feature_columns : str
-                Comma-separated list of columns to keep (empty = keep all)
-            exclude_columns : str
-                Comma-separated list of columns to exclude
-            
-            Returns:
-            --------
-            pd.DataFrame
-                DataFrame with selected features
-            dict
-                Selection metadata
-            #
+            # Select specific features or exclude unwanted columns
+            # Parameters: df, feature_columns (comma-separated), exclude_columns (comma-separated)
+            # Returns: DataFrame with selected features, selection metadata dict
             logger.info("="*80)
             logger.info("FEATURE SELECTION")
             logger.info("="*80)
@@ -322,27 +290,9 @@ implementation:
         
         
         def extract_ground_truth(df, target_column, target_mapping_json):
-            #
-            Extract and encode ground truth labels for supervised evaluation
-            
-            Parameters:
-            -----------
-            df : pd.DataFrame
-                Input dataframe
-            target_column : str
-                Name of target column (empty string = no ground truth)
-            target_mapping_json : str
-                JSON string with custom label mapping
-            
-            Returns:
-            --------
-            df_features : pd.DataFrame
-                Features without target column
-            ground_truth : np.ndarray or None
-                Encoded ground truth labels
-            ground_truth_info : dict or None
-                Metadata about ground truth
-            #
+            # Extract and encode ground truth labels for supervised evaluation
+            # Parameters: df, target_column, target_mapping_json
+            # Returns: df_features (without target), ground_truth (encoded), ground_truth_info (metadata)
             if not target_column or target_column == '':
                 logger.info("No target column specified - skipping ground truth extraction")
                 return df, None, None
@@ -378,7 +328,7 @@ implementation:
             ground_truth_info = {
                 'column_name': target_column,
                 'n_samples': int(len(target_series)),
-                'unique_values': target_series.unique().tolist()[:50],  # Limit to 50 for large datasets
+                'unique_values': target_series.unique().tolist()[:50],
                 'n_unique': int(target_series.nunique()),
                 'dtype': str(target_series.dtype)
             }
@@ -438,21 +388,9 @@ implementation:
         
         
         def validate_dataset(df):
-            #
-            Validate dataset quality and characteristics
-            
-            Parameters:
-            -----------
-            df : pd.DataFrame
-                Dataset to validate
-            
-            Returns:
-            --------
-            validation : dict
-                Validation results
-            metadata : dict
-                Dataset metadata
-            #
+            # Validate dataset quality and characteristics
+            # Parameters: df
+            # Returns: validation dict, metadata dict
             logger.info("="*80)
             logger.info("VALIDATING DATASET")
             logger.info("="*80)
@@ -575,7 +513,7 @@ implementation:
                 'memory_mb': float(df.memory_usage(deep=True).sum() / 1024**2)
             }
             
-            # Add statistics for numeric columns (sample of first 20 for performance)
+            # Add statistics for numeric columns (sample of first 20)
             if numeric_cols:
                 metadata['statistics'] = {}
                 sample_cols = numeric_cols[:20]
@@ -618,7 +556,7 @@ implementation:
             parser.add_argument("--access_token", required=True,
                                help="Bearer access token for PI API")
             parser.add_argument("--target_column", default='',
-                               help="Target column for ground truth (optional)")
+                               help="Target column for ground truth")
             parser.add_argument("--target_mapping", default='{}',
                                help="JSON mapping for categorical targets")
             parser.add_argument("--page_size", default='2000',
@@ -787,4 +725,3 @@ implementation:
       - {outputPath: metadata}
       - --output_ground_truth
       - {outputPath: ground_truth}
-
