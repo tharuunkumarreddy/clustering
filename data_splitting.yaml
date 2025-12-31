@@ -52,6 +52,7 @@ implementation:
         import json
         import argparse
         import logging
+        import shutil
         import pandas as pd
         import numpy as np
         from sklearn.model_selection import train_test_split
@@ -393,7 +394,12 @@ implementation:
                 
                 # Save training ground truth
                 if train_gt is not None and len(train_gt) > 0:
+                    # Save using np.save then rename to remove .npy extension
                     np.save(args.output_train_ground_truth, train_gt)
+                    # np.save automatically adds .npy extension, so we need to rename
+                    npy_path = args.output_train_ground_truth + '.npy'
+                    if os.path.exists(npy_path):
+                        shutil.move(npy_path, args.output_train_ground_truth)
                     logger.info(
                         f"Training ground truth saved: {args.output_train_ground_truth}"
                     )
@@ -405,7 +411,12 @@ implementation:
                 
                 # Save test ground truth
                 if test_gt is not None and len(test_gt) > 0:
+                    # Save using np.save then rename to remove .npy extension
                     np.save(args.output_test_ground_truth, test_gt)
+                    # np.save automatically adds .npy extension, so we need to rename
+                    npy_path = args.output_test_ground_truth + '.npy'
+                    if os.path.exists(npy_path):
+                        shutil.move(npy_path, args.output_test_ground_truth)
                     logger.info(
                         f"Test ground truth saved: {args.output_test_ground_truth}"
                     )
