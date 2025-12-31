@@ -1,0 +1,719 @@
+name: Universal Clustering Model Evaluation Component
+description: |
+  Comprehensive evaluation metrics for clustering results designed for TEST DATA evaluation.
+  Supports internal metrics (no ground truth needed) and external metrics (with ground truth).
+  Calculates Silhouette Score, Davies-Bouldin Index, Calinski-Harabasz Score, ARI, AMI, and per-cluster statistics.
+
+inputs:
+  - name: data
+    type: Data
+    description: 'Data used for clustering (CSV or NPY, typically TEST data)'
+  - name: labels
+    type: Data
+    description: 'Cluster labels/predictions (NPY or CSV from inference component)'
+  - name: true_labels
+    type: Data
+    description: 'Ground truth labels for external metrics (NPY or CSV, optional)'
+    optional: true
+  - name: algorithm
+    type: String
+    description: 'Algorithm name for metadata'
+    default: 'Unknown'
+  - name: dataset_name
+    type: String
+    description: 'Dataset identifier (test, train, validation, etc.)'
+    default: 'test'
+  - name: per_cluster
+    type: String
+    description: 'Calculate detailed per-cluster statistics (true/false)'
+    default: 'false'
+
+outputs:
+  - name: evaluation_results
+    type: Data
+    description: 'Complete evaluation metrics and statistics (JSON format)'
+  - name: summary_report
+    type: Data
+    description: 'Human-readable evaluation summary (TXT format)'
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import os
+        import sys
+        import json
+        import argparse
+        import warnings
+        import numpy as np
+        import pandas as pd
+        from pathlib import Path
+        
+        warnings.filterwarnings('ignore')
+        
+        # Import sklearn metrics
+        from sklearn.metrics import (
+            silhouette_score,
+            silhouette_samples,
+            davies_bouldin_score,
+            calinski_harabasz_score
+        )
+        
+        # Try to import external metrics
+        try:
+            from sklearn.metrics import (
+                adjusted_rand_score,
+                adjusted_mutual_info_score,
+                normalized_mutual_info_score
+            )
+            EXTERNAL_METRICS_AVAILABLE = True
+        except ImportError:
+            EXTERNAL_METRICS_AVAILABLE = False
+            print("Warning: sklearn version too old for external metrics (ARI, AMI)")
+        
+        
+        def load_data(data_path):
+            # Load data from file
+            # Returns: numpy array
+            print(f"\nLoading data from: {data_path}")
+            
+            try:
+                if data_path.endswith('.csv'):
+                    df = pd.read_csv(data_path)
+                    data = df.values
+                elif data_path.endswith('.npy'):
+                    data = np.load(data_path)
+                else:
+                    raise ValueError("Unsupported format. Use .csv or .npy")
+                
+                print(f"Loaded successfully")
+                print(f"Shape: {data.shape[0]} samples x {data.shape[1]} features")
+                
+                return data
+                
+            except Exception as e:
+                print(f"Error loading data: {str(e)}")
+                raise
+        
+        
+        def load_labels(labels_path):
+            # Load cluster labels
+            # Returns: numpy array
+            print(f"\nLoading labels from: {labels_path}")
+            
+            try:
+                if labels_path.endswith('.npy'):
+                    labels = np.load(labels_path)
+                elif labels_path.endswith('.csv'):
+                    df = pd.read_csv(labels_path)
+                    if len(df.columns) == 1:
+                        labels = df.iloc[:, 0].values
+                    else:
+                        labels = df.iloc[:, -1].values
+                else:
+                    raise ValueError("Unsupported format. Use .npy or .csv")
+                
+                print(f"Loaded successfully")
+                print(f"Length: {len(labels)}")
+                
+                return labels
+                
+            except Exception as e:
+                print(f"Error loading labels: {str(e)}")
+                raise
+        
+        
+        def validate_inputs(data, labels):
+            # Validate data and labels
+            print(f"\nValidating inputs...")
+            
+            # Check shapes match
+            if len(data) != len(labels):
+                raise ValueError(
+                    f"Data and labels size mismatch: "
+                    f"data has {len(data)} samples, labels has {len(labels)}"
+                )
+            
+            print(f"Shapes match: {len(data)} samples")
+            
+            # Check for invalid values in data
+            if not np.isfinite(data).all():
+                n_invalid = (~np.isfinite(data)).sum()
+                raise ValueError(f"Data contains {n_invalid} NaN/Inf values")
+            
+            print(f"No NaN/Inf in data")
+            
+            # Analyze labels
+            unique_labels = np.unique(labels)
+            n_clusters = len(unique_labels[unique_labels != -1])
+            n_noise = np.sum(labels == -1)
+            
+            print(f"Found {n_clusters} clusters")
+            if n_noise > 0:
+                print(f"Found {n_noise} noise points ({n_noise/len(labels)*100:.1f}%)")
+            
+            return n_clusters, n_noise
+        
+        
+        def calculate_basic_statistics(labels):
+            # Calculate basic cluster statistics
+            # Returns: dict with basic statistics
+            print(f"\n[1/5] Calculating basic statistics...")
+            
+            unique_labels = np.unique(labels)
+            n_clusters = len(unique_labels[unique_labels != -1])
+            n_noise = np.sum(labels == -1)
+            
+            # Cluster sizes
+            cluster_sizes = {}
+            for label in unique_labels:
+                count = np.sum(labels == label)
+                label_key = "noise" if label == -1 else f"cluster_{int(label)}"
+                cluster_sizes[label_key] = int(count)
+            
+            # Get sizes without noise
+            valid_sizes = [v for k, v in cluster_sizes.items() if k != 'noise']
+            
+            stats = {
+                'n_samples': int(len(labels)),
+                'n_clusters': int(n_clusters),
+                'n_noise': int(n_noise),
+                'noise_percentage': float(n_noise / len(labels) * 100) if len(labels) > 0 else 0.0,
+                'cluster_sizes': cluster_sizes,
+                'min_cluster_size': int(min(valid_sizes)) if valid_sizes else 0,
+                'max_cluster_size': int(max(valid_sizes)) if valid_sizes else 0,
+                'avg_cluster_size': float(np.mean(valid_sizes)) if valid_sizes else 0.0,
+                'std_cluster_size': float(np.std(valid_sizes)) if valid_sizes else 0.0
+            }
+            
+            print(f"Clusters: {n_clusters}")
+            print(f"Noise: {n_noise} ({stats['noise_percentage']:.1f}%)")
+            if n_clusters > 0:
+                print(f"Avg cluster size: {stats['avg_cluster_size']:.1f} +/- {stats['std_cluster_size']:.1f}")
+            
+            return stats
+        
+        
+        def calculate_internal_metrics(data, labels):
+            # Calculate internal validation metrics
+            # Returns: dict with internal metrics
+            print(f"\n[2/5] Calculating internal metrics...")
+            
+            # Filter out noise points
+            valid_mask = labels != -1
+            data_valid = data[valid_mask]
+            labels_valid = labels[valid_mask]
+            
+            n_clusters = len(np.unique(labels_valid))
+            
+            metrics = {}
+            
+            # Need at least 2 clusters
+            if n_clusters < 2:
+                print(f"Need at least 2 clusters for metrics (found {n_clusters})")
+                return {
+                    'silhouette_score': None,
+                    'davies_bouldin_score': None,
+                    'calinski_harabasz_score': None,
+                    'reason': f'Only {n_clusters} cluster(s) found'
+                }
+            
+            if len(labels_valid) < n_clusters:
+                print(f"Not enough samples for metrics")
+                return {
+                    'silhouette_score': None,
+                    'davies_bouldin_score': None,
+                    'calinski_harabasz_score': None,
+                    'reason': 'Insufficient samples'
+                }
+            
+            # Silhouette Score
+            try:
+                sil_score = silhouette_score(data_valid, labels_valid)
+                metrics['silhouette_score'] = float(sil_score)
+                
+                if sil_score > 0.7:
+                    interp = 'Excellent'
+                elif sil_score > 0.5:
+                    interp = 'Good'
+                elif sil_score > 0.25:
+                    interp = 'Fair'
+                else:
+                    interp = 'Poor'
+                
+                print(f"Silhouette Score: {sil_score:.4f} ({interp})")
+            except Exception as e:
+                print(f"Could not calculate Silhouette Score: {str(e)}")
+                metrics['silhouette_score'] = None
+            
+            # Davies-Bouldin Index
+            try:
+                db_score = davies_bouldin_score(data_valid, labels_valid)
+                metrics['davies_bouldin_score'] = float(db_score)
+                print(f"Davies-Bouldin Score: {db_score:.4f} (lower is better)")
+            except Exception as e:
+                print(f"Could not calculate Davies-Bouldin Score: {str(e)}")
+                metrics['davies_bouldin_score'] = None
+            
+            # Calinski-Harabasz Index
+            try:
+                ch_score = calinski_harabasz_score(data_valid, labels_valid)
+                metrics['calinski_harabasz_score'] = float(ch_score)
+                print(f"Calinski-Harabasz Score: {ch_score:.4f} (higher is better)")
+            except Exception as e:
+                print(f"Could not calculate Calinski-Harabasz Score: {str(e)}")
+                metrics['calinski_harabasz_score'] = None
+            
+            return metrics
+        
+        
+        def calculate_external_metrics(pred_labels, true_labels):
+            # Calculate external validation metrics (requires ground truth)
+            # Returns: dict with external metrics
+            print(f"\n[3/5] Calculating external metrics (vs ground truth)...")
+            
+            if not EXTERNAL_METRICS_AVAILABLE:
+                print(f"External metrics unavailable (sklearn version too old)")
+                return {'available': False, 'error': 'sklearn version too old'}
+            
+            # Filter out noise points
+            valid_mask = pred_labels != -1
+            pred_valid = pred_labels[valid_mask]
+            true_valid = true_labels[valid_mask]
+            
+            if len(pred_valid) == 0:
+                print(f"All points marked as noise, cannot calculate external metrics")
+                return {'available': False, 'error': 'All points are noise'}
+            
+            metrics = {'available': True}
+            
+            # Adjusted Rand Index
+            try:
+                ari = adjusted_rand_score(true_valid, pred_valid)
+                metrics['adjusted_rand_index'] = float(ari)
+                
+                if ari > 0.9:
+                    interp = 'Excellent match'
+                elif ari > 0.7:
+                    interp = 'Good match'
+                elif ari > 0.5:
+                    interp = 'Moderate match'
+                else:
+                    interp = 'Poor match'
+                
+                print(f"Adjusted Rand Index: {ari:.4f} ({interp})")
+            except Exception as e:
+                print(f"Could not calculate ARI: {str(e)}")
+                metrics['adjusted_rand_index'] = None
+            
+            # Adjusted Mutual Information
+            try:
+                ami = adjusted_mutual_info_score(true_valid, pred_valid)
+                metrics['adjusted_mutual_info'] = float(ami)
+                print(f"Adjusted Mutual Info: {ami:.4f}")
+            except Exception as e:
+                print(f"Could not calculate AMI: {str(e)}")
+                metrics['adjusted_mutual_info'] = None
+            
+            # Normalized Mutual Information
+            try:
+                nmi = normalized_mutual_info_score(true_valid, pred_valid)
+                metrics['normalized_mutual_info'] = float(nmi)
+                print(f"Normalized Mutual Info: {nmi:.4f}")
+            except Exception as e:
+                print(f"Could not calculate NMI: {str(e)}")
+                metrics['normalized_mutual_info'] = None
+            
+            return metrics
+        
+        
+        def calculate_cluster_quality(data, labels):
+            # Calculate cluster quality metrics
+            # Returns: dict with quality metrics
+            print(f"\n[4/5] Calculating cluster quality metrics...")
+            
+            # Filter out noise points
+            valid_mask = labels != -1
+            data_valid = data[valid_mask]
+            labels_valid = labels[valid_mask]
+            
+            if len(labels_valid) == 0:
+                print(f"No valid clusters (all noise)")
+                return {'error': 'All points are noise'}
+            
+            metrics = {}
+            
+            # Intra-cluster distances
+            intra_distances = []
+            for label in np.unique(labels_valid):
+                cluster_points = data_valid[labels_valid == label]
+                if len(cluster_points) > 1:
+                    center = np.mean(cluster_points, axis=0)
+                    distances = np.linalg.norm(cluster_points - center, axis=1)
+                    intra_distances.extend(distances)
+            
+            if intra_distances:
+                metrics['mean_intra_cluster_distance'] = float(np.mean(intra_distances))
+                metrics['std_intra_cluster_distance'] = float(np.std(intra_distances))
+                metrics['max_intra_cluster_distance'] = float(np.max(intra_distances))
+                print(f"Mean intra-cluster distance: {metrics['mean_intra_cluster_distance']:.4f}")
+            
+            # Inter-cluster distances
+            unique_labels = np.unique(labels_valid)
+            if len(unique_labels) > 1:
+                centers = []
+                for label in unique_labels:
+                    cluster_points = data_valid[labels_valid == label]
+                    centers.append(np.mean(cluster_points, axis=0))
+                centers = np.array(centers)
+                
+                inter_distances = []
+                for i in range(len(centers)):
+                    for j in range(i+1, len(centers)):
+                        dist = np.linalg.norm(centers[i] - centers[j])
+                        inter_distances.append(dist)
+                
+                metrics['mean_inter_cluster_distance'] = float(np.mean(inter_distances))
+                metrics['min_inter_cluster_distance'] = float(np.min(inter_distances))
+                metrics['max_inter_cluster_distance'] = float(np.max(inter_distances))
+                print(f"Mean inter-cluster distance: {metrics['mean_inter_cluster_distance']:.4f}")
+                
+                # Separation ratio
+                if metrics.get('mean_intra_cluster_distance'):
+                    separation_ratio = metrics['mean_inter_cluster_distance'] / metrics['mean_intra_cluster_distance']
+                    metrics['separation_ratio'] = float(separation_ratio)
+                    
+                    if separation_ratio > 2.0:
+                        quality = 'Excellent'
+                    elif separation_ratio > 1.5:
+                        quality = 'Good'
+                    elif separation_ratio > 1.0:
+                        quality = 'Moderate'
+                    else:
+                        quality = 'Poor'
+                    
+                    print(f"Separation ratio: {separation_ratio:.4f} ({quality})")
+            
+            # Cluster balance
+            cluster_sizes = [np.sum(labels_valid == label) for label in unique_labels]
+            if cluster_sizes:
+                metrics['cluster_size_std'] = float(np.std(cluster_sizes))
+                metrics['cluster_size_cv'] = float(np.std(cluster_sizes) / np.mean(cluster_sizes))
+                print(f"Cluster size variability (CV): {metrics['cluster_size_cv']:.4f}")
+            
+            return metrics
+        
+        
+        def calculate_per_cluster_statistics(data, labels, calculate_detailed=True):
+            # Calculate statistics for each cluster
+            # Returns: dict with per-cluster statistics
+            print(f"\n[5/5] Calculating per-cluster statistics...")
+            
+            if not calculate_detailed:
+                print(f"Skipped (disabled)")
+                return None
+            
+            # Filter out noise points
+            valid_mask = labels != -1
+            data_valid = data[valid_mask]
+            labels_valid = labels[valid_mask]
+            
+            if len(labels_valid) == 0:
+                print(f"No valid clusters to analyze")
+                return None
+            
+            per_cluster_stats = {}
+            
+            # Calculate silhouette samples once
+            try:
+                if len(np.unique(labels_valid)) >= 2:
+                    cluster_silhouettes = silhouette_samples(data_valid, labels_valid)
+                    has_silhouette = True
+                else:
+                    has_silhouette = False
+            except:
+                has_silhouette = False
+            
+            for label in sorted(np.unique(labels_valid)):
+                cluster_mask = labels_valid == label
+                cluster_points = data_valid[cluster_mask]
+                cluster_key = f"cluster_{int(label)}"
+                
+                # Basic stats
+                size = len(cluster_points)
+                percentage = size / len(labels_valid) * 100
+                
+                # Cluster center and spread
+                center = np.mean(cluster_points, axis=0)
+                distances = np.linalg.norm(cluster_points - center, axis=1)
+                
+                # Silhouette score for this cluster
+                cluster_silhouette = None
+                if has_silhouette:
+                    cluster_silhouette = float(np.mean(cluster_silhouettes[cluster_mask]))
+                
+                stats = {
+                    'size': int(size),
+                    'percentage': float(percentage),
+                    'mean_distance_to_center': float(np.mean(distances)),
+                    'max_distance_to_center': float(np.max(distances)),
+                    'std_distance_to_center': float(np.std(distances)),
+                    'silhouette_score': cluster_silhouette
+                }
+                
+                per_cluster_stats[cluster_key] = stats
+                
+                sil_str = f"sil={cluster_silhouette:.3f}" if cluster_silhouette is not None else "sil=N/A"
+                print(f"{cluster_key}: {size} samples ({percentage:.1f}%), {sil_str}")
+            
+            return per_cluster_stats
+        
+        
+        def generate_summary_report(evaluation_results):
+            # Generate human-readable summary report
+            # Returns: str with summary report
+            report = []
+            report.append("\n" + "="*80)
+            report.append("CLUSTERING EVALUATION SUMMARY")
+            report.append("="*80)
+            
+            # Basic statistics
+            basic = evaluation_results['basic_statistics']
+            report.append(f"\nDataset Overview:")
+            report.append(f"  Dataset: {evaluation_results.get('dataset', 'Unknown')}")
+            report.append(f"  Algorithm: {evaluation_results.get('algorithm', 'Unknown')}")
+            report.append(f"  Total samples: {basic['n_samples']}")
+            report.append(f"  Clusters: {basic['n_clusters']}")
+            report.append(f"  Noise points: {basic['n_noise']} ({basic['noise_percentage']:.1f}%)")
+            if basic['n_clusters'] > 0:
+                report.append(f"  Avg cluster size: {basic['avg_cluster_size']:.1f} +/- {basic['std_cluster_size']:.1f}")
+            
+            # Internal metrics
+            if evaluation_results.get('internal_metrics') and not evaluation_results['internal_metrics'].get('reason'):
+                internal = evaluation_results['internal_metrics']
+                report.append(f"\nInternal Metrics (Clustering Quality):")
+                
+                if internal.get('silhouette_score') is not None:
+                    sil = internal['silhouette_score']
+                    if sil > 0.7:
+                        quality = "Excellent"
+                    elif sil > 0.5:
+                        quality = "Good"
+                    elif sil > 0.25:
+                        quality = "Fair"
+                    else:
+                        quality = "Poor"
+                    report.append(f"  Silhouette Score: {sil:.4f} ({quality})")
+                
+                if internal.get('davies_bouldin_score') is not None:
+                    db = internal['davies_bouldin_score']
+                    report.append(f"  Davies-Bouldin Score: {db:.4f} (lower is better)")
+                
+                if internal.get('calinski_harabasz_score') is not None:
+                    ch = internal['calinski_harabasz_score']
+                    report.append(f"  Calinski-Harabasz Score: {ch:.4f} (higher is better)")
+            
+            # External metrics
+            if evaluation_results.get('external_metrics') and evaluation_results['external_metrics'].get('available'):
+                external = evaluation_results['external_metrics']
+                report.append(f"\nExternal Metrics (vs Ground Truth):")
+                
+                if external.get('adjusted_rand_index') is not None:
+                    ari = external['adjusted_rand_index']
+                    if ari > 0.9:
+                        match = "Excellent"
+                    elif ari > 0.7:
+                        match = "Good"
+                    elif ari > 0.5:
+                        match = "Moderate"
+                    else:
+                        match = "Poor"
+                    report.append(f"  Adjusted Rand Index: {ari:.4f} ({match})")
+            
+            # Quality metrics
+            if evaluation_results.get('cluster_quality') and not evaluation_results['cluster_quality'].get('error'):
+                quality = evaluation_results['cluster_quality']
+                report.append(f"\nCluster Quality:")
+                
+                if quality.get('separation_ratio'):
+                    ratio = quality['separation_ratio']
+                    if ratio > 2.0:
+                        quality_label = "Excellent"
+                    elif ratio > 1.5:
+                        quality_label = "Good"
+                    elif ratio > 1.0:
+                        quality_label = "Moderate"
+                    else:
+                        quality_label = "Poor"
+                    report.append(f"  Separation ratio: {ratio:.4f} ({quality_label})")
+            
+            report.append("\n" + "="*80)
+            
+            return '\n'.join(report)
+        
+        
+        def main():
+            parser = argparse.ArgumentParser(
+                description='Universal Clustering Model Evaluation Component'
+            )
+            
+            # Input arguments
+            parser.add_argument('--data', required=True,
+                               help='Data file path')
+            parser.add_argument('--labels', required=True,
+                               help='Cluster labels path')
+            parser.add_argument('--true_labels', default='',
+                               help='Ground truth labels (optional)')
+            parser.add_argument('--algorithm', default='Unknown',
+                               help='Algorithm name')
+            parser.add_argument('--dataset_name', default='test',
+                               help='Dataset name')
+            parser.add_argument('--per_cluster', default='false',
+                               help='Calculate per-cluster stats')
+            
+            # Output arguments
+            parser.add_argument('--output_evaluation_results', required=True,
+                               help='Output path for evaluation results')
+            parser.add_argument('--output_summary_report', required=True,
+                               help='Output path for summary report')
+            
+            args = parser.parse_args()
+            
+            try:
+                print("="*80)
+                print("UNIVERSAL CLUSTERING MODEL EVALUATION")
+                print("="*80)
+                print("Important: Use this on TEST data predictions!")
+                print("="*80)
+                
+                print(f"\nConfiguration:")
+                print(f"  Data: {args.data}")
+                print(f"  Labels: {args.labels}")
+                print(f"  True labels: {args.true_labels if args.true_labels else 'None'}")
+                print(f"  Algorithm: {args.algorithm}")
+                print(f"  Dataset: {args.dataset_name}")
+                print(f"  Per-cluster: {args.per_cluster}")
+                
+                # Load data and labels
+                data = load_data(args.data)
+                labels = load_labels(args.labels)
+                
+                # Validate inputs
+                n_clusters, n_noise = validate_inputs(data, labels)
+                
+                # Calculate metrics
+                evaluation_results = {
+                    'algorithm': args.algorithm,
+                    'dataset': args.dataset_name,
+                    'data_shape': {
+                        'n_samples': int(data.shape[0]),
+                        'n_features': int(data.shape[1])
+                    }
+                }
+                
+                # Basic statistics
+                evaluation_results['basic_statistics'] = calculate_basic_statistics(labels)
+                
+                # Internal metrics
+                evaluation_results['internal_metrics'] = calculate_internal_metrics(data, labels)
+                
+                # External metrics
+                if args.true_labels and os.path.exists(args.true_labels):
+                    true_labels = load_labels(args.true_labels)
+                    
+                    if len(true_labels) != len(labels):
+                        raise ValueError(
+                            f"Ground truth length mismatch: "
+                            f"labels has {len(labels)}, true_labels has {len(true_labels)}"
+                        )
+                    
+                    evaluation_results['external_metrics'] = calculate_external_metrics(
+                        labels, true_labels
+                    )
+                else:
+                    evaluation_results['external_metrics'] = None
+                
+                # Cluster quality metrics
+                evaluation_results['cluster_quality'] = calculate_cluster_quality(data, labels)
+                
+                # Per-cluster statistics
+                calculate_detailed = args.per_cluster.lower() == 'true'
+                evaluation_results['per_cluster_statistics'] = calculate_per_cluster_statistics(
+                    data, labels, calculate_detailed=calculate_detailed
+                )
+                
+                # Ensure output directories exist
+                os.makedirs(os.path.dirname(args.output_evaluation_results), exist_ok=True)
+                os.makedirs(os.path.dirname(args.output_summary_report), exist_ok=True)
+                
+                # Save evaluation results
+                with open(args.output_evaluation_results, 'w') as f:
+                    json.dump(evaluation_results, f, indent=2)
+                
+                file_size = os.path.getsize(args.output_evaluation_results) / 1024
+                print(f"\nEvaluation results saved: {args.output_evaluation_results} ({file_size:.2f} KB)")
+                
+                # Generate and save summary
+                summary = generate_summary_report(evaluation_results)
+                with open(args.output_summary_report, 'w') as f:
+                    f.write(summary)
+                
+                print(f"Summary report saved: {args.output_summary_report}")
+                
+                # Print summary
+                print(summary)
+                
+                # Quick assessment
+                print(f"\nQuick Assessment:")
+                
+                internal = evaluation_results.get('internal_metrics', {})
+                if internal.get('silhouette_score') is not None:
+                    sil = internal['silhouette_score']
+                    if sil > 0.7:
+                        print(f"  Excellent clustering (Silhouette > 0.7)")
+                    elif sil > 0.5:
+                        print(f"  Good clustering (Silhouette > 0.5)")
+                    elif sil > 0.25:
+                        print(f"  Fair clustering (Silhouette > 0.25)")
+                    else:
+                        print(f"  Poor clustering (Silhouette < 0.25)")
+                
+                if args.dataset_name == 'train':
+                    print(f"\nNote: You evaluated TRAINING data.")
+                    print(f"For TRUE performance, evaluate TEST data predictions!")
+                else:
+                    print(f"\nYou evaluated {args.dataset_name.upper()} data - this is correct!")
+                
+                print("="*80 + "\n")
+                
+            except Exception as e:
+                print(f"\nERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+        
+        
+        if __name__ == '__main__':
+            main()
+
+    args:
+      - --data
+      - {inputPath: data}
+      - --labels
+      - {inputPath: labels}
+      - --true_labels
+      - {inputPath: true_labels}
+      - --algorithm
+      - {inputValue: algorithm}
+      - --dataset_name
+      - {inputValue: dataset_name}
+      - --per_cluster
+      - {inputValue: per_cluster}
+      - --output_evaluation_results
+      - {outputPath: evaluation_results}
+      - --output_summary_report
+      - {outputPath: summary_report}
