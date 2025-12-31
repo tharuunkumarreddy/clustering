@@ -494,7 +494,7 @@ implementation:
                     logger.error(f"Invalid JSON in parameters: {e}")
                     logger.error(f"Detection params: {args.detection_params}")
                     logger.error(f"Handling params: {args.handling_params}")
-                    logger.error("Expected format: '{\"param\": value}' (use double quotes)")
+                    logger.error('Expected format: {"param": value} with double quotes')
                     sys.exit(1)
                 
                 # Load data
