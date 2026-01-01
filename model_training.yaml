@@ -365,10 +365,7 @@ implementation:
             # Returns: tuple (AlgorithmClass, config_dict)
             if algorithm_name not in ALGORITHM_REGISTRY:
                 available = ', '.join(ALGORITHM_REGISTRY.keys())
-                raise ValueError(
-                    (f'Unknown algorithm: {algorithm_name}\n'
-                     f'Available algorithms: {available}')
-                )
+                raise ValueError('Unknown algorithm: {}\nAvailable algorithms: {}'.format(algorithm_name, available))
             
             config = ALGORITHM_REGISTRY[algorithm_name]
             module_name = config['module']
@@ -392,8 +389,7 @@ implementation:
                     }
                     package_name = package_map.get(module_name.split('.')[0], module_name.split('.')[0])
                     raise ImportError(
-                        (f'\n{algorithm_name} requires additional package: {package_name}\n'
-                         f'Install with: pip install {package_name}')
+                        '\n{} requires additional package: {}\nInstall with: pip install {}'.format(package_name, package_name)
                     ) from e
                 raise
         
@@ -656,8 +652,7 @@ implementation:
                 if args.algorithm not in ALGORITHM_REGISTRY:
                     available = ', '.join(ALGORITHM_REGISTRY.keys())
                     raise ValueError(
-                        (f'Unknown algorithm: {args.algorithm}\n'
-                         f'Available: {available}')
+                        'Unknown algorithm: {}\nAvailable: {}'.format(args.algorithm, available)
                     )
                 
                 config = ALGORITHM_REGISTRY[args.algorithm]
@@ -734,8 +729,7 @@ implementation:
                 print(f'  Clusters found: {metadata['training_results']['n_clusters']}')
                 
                 if metadata['training_results']['n_noise'] > 0:
-                    print(f'  Noise points: {metadata['training_results']['n_noise']} '
-                          f'({metadata['training_results']['noise_percentage']:.1f}%)')
+                    print'  Noise points: {} ({}%)'.format(metadata['training_results']['n_noise'], metadata['training_results']['noise_percentage']:.1f)
                 
                 print(f'\nOutput files created:')
                 print(f'  Model: {args.output_model}')
