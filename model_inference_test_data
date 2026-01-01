@@ -170,7 +170,7 @@ implementation:
                 # Validate
                 if len(X_train) != len(train_labels):
                     raise ValueError(
-                        f'Training data and labels size mismatch: '
+                        f'Training data and labels size mismatch: ' +
                         f'data={len(X_train)}, labels={len(train_labels)}'
                     )
                 
@@ -190,7 +190,7 @@ implementation:
             
             if actual_features != expected_features:
                 raise ValueError(
-                    f'Feature mismatch: model expects {expected_features} features, '
+                    f'Feature mismatch: model expects {expected_features} features, ' +
                     f'test data has {actual_features} features'
                 )
             
@@ -383,7 +383,7 @@ implementation:
             if inference_mode == 'native':
                 if not capabilities.get('has_predict', False):
                     raise ValueError(
-                        f'{algorithm_name} does not support native predict(). '
+                        f'{algorithm_name} does not support native predict(). ' +
                         f'Try: nearest_neighbor or refit mode'
                     )
                 predictions = predict_native(model, X_test, algorithm_name)
