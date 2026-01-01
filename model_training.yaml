@@ -366,7 +366,7 @@ implementation:
             if algorithm_name not in ALGORITHM_REGISTRY:
                 available = ', '.join(ALGORITHM_REGISTRY.keys())
                 raise ValueError(
-                    f'Unknown algorithm: {algorithm_name}\n'
+                    f'Unknown algorithm: {algorithm_name}\n' +
                     f'Available algorithms: {available}'
                 )
             
@@ -392,7 +392,7 @@ implementation:
                     }
                     package_name = package_map.get(module_name.split('.')[0], module_name.split('.')[0])
                     raise ImportError(
-                        f'\n{algorithm_name} requires additional package: {package_name}\n'
+                        f'\n{algorithm_name} requires additional package: {package_name}\n' +
                         f'Install with: pip install {package_name}'
                     ) from e
                 raise
@@ -656,7 +656,7 @@ implementation:
                 if args.algorithm not in ALGORITHM_REGISTRY:
                     available = ', '.join(ALGORITHM_REGISTRY.keys())
                     raise ValueError(
-                        f'Unknown algorithm: {args.algorithm}\n'
+                        f'Unknown algorithm: {args.algorithm}\n' +
                         f'Available: {available}'
                     )
                 
