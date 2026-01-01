@@ -134,7 +134,7 @@ implementation:
             # Check shapes match
             if len(data) != len(labels):
                 raise ValueError(
-                    f'Data and labels size mismatch: '
+                    f'Data and labels size mismatch: ' +
                     f'data has {len(data)} samples, labels has {len(labels)}'
                 )
             
@@ -627,7 +627,7 @@ implementation:
                     
                     if len(true_labels) != len(labels):
                         raise ValueError(
-                            f'Ground truth length mismatch: '
+                            f'Ground truth length mismatch: ' +
                             f'labels has {len(labels)}, true_labels has {len(true_labels)}'
                         )
                     
