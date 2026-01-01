@@ -1,0 +1,232 @@
+name: Download Data Splitting Results from CDN
+description: Downloads train data, test data, and test ground truth from CDN URLs (uploaded by data splitting CDN upload component)
+
+inputs:
+  - name: train_data_cdn_url
+    type: String
+    description: "CDN URL for training dataset (CSV format)"
+  - name: test_data_cdn_url
+    type: String
+    description: "CDN URL for test dataset (CSV format)"
+  - name: test_ground_truth_cdn_url
+    type: String
+    description: "CDN URL for test ground truth labels (NPY format)"
+
+outputs:
+  - name: train_data
+    type: Data
+    description: "Downloaded training dataset (CSV format)"
+  - name: test_data
+    type: Data
+    description: "Downloaded test dataset (CSV format)"
+  - name: test_ground_truth
+    type: Data
+    description: "Downloaded test ground truth labels (NPY format)"
+  - name: download_summary
+    type: Data
+    description: "JSON summary of all downloaded files"
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import requests
+        import json
+        import os
+        import time
+        
+        parser = argparse.ArgumentParser(
+            description="Download Data Splitting Results from CDN"
+        )
+        
+        # Input CDN URLs
+        parser.add_argument('--train_data_cdn_url', required=True,
+                           help="CDN URL for training data CSV")
+        parser.add_argument('--test_data_cdn_url', required=True,
+                           help="CDN URL for test data CSV")
+        parser.add_argument('--test_ground_truth_cdn_url', required=True,
+                           help="CDN URL for test ground truth NPY")
+        
+        # Output paths for downloaded files
+        parser.add_argument('--output_train_data', required=True,
+                           help="Output path for downloaded train data")
+        parser.add_argument('--output_test_data', required=True,
+                           help="Output path for downloaded test data")
+        parser.add_argument('--output_test_ground_truth', required=True,
+                           help="Output path for downloaded test ground truth")
+        parser.add_argument('--output_download_summary', required=True,
+                           help="Output path for download summary JSON")
+        
+        args = parser.parse_args()
+        
+        print("="*80)
+        print("CDN DOWNLOAD COMPONENT - DATA SPLITTING RESULTS")
+        print("="*80)
+        print("")
+        
+        # Handle URL encoding (fix double dollar signs if present)
+        def fix_url_encoding(url):
+            # Replace double $$ with single $ (common encoding issue)
+            return url.replace("$$", "$")
+        
+        def download_file(cdn_url, output_path, file_description, is_binary=False):
+            # Download a single file from CDN
+            print(f"Downloading {file_description}...")
+            print(f"  CDN URL: {cdn_url}")
+            
+            # Fix URL encoding
+            fixed_url = fix_url_encoding(cdn_url)
+            
+            try:
+                # Download file
+                print(f"  Fetching from CDN...")
+                response = requests.get(fixed_url, timeout=60)
+                response.raise_for_status()
+                
+                # Get file size
+                file_size = len(response.content)
+                print(f"  Downloaded: {file_size:,} bytes ({file_size/1024:.2f} KB)")
+                
+                # Ensure output directory exists
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                
+                # Save file
+                mode = 'wb' if is_binary else 'w'
+                if is_binary:
+                    with open(output_path, mode) as f:
+                        f.write(response.content)
+                else:
+                    with open(output_path, mode) as f:
+                        f.write(response.text)
+                
+                print(f"  Saved to: {output_path}")
+                print(f"  Status: Success")
+                print("")
+                
+                return {
+                    'status': 'success',
+                    'cdn_url': cdn_url,
+                    'local_path': output_path,
+                    'file_size_bytes': file_size,
+                    'file_size_kb': round(file_size / 1024, 2)
+                }
+            
+            except requests.exceptions.RequestException as e:
+                print(f"  Status: Failed")
+                print(f"  Error: {str(e)}")
+                print("")
+                raise RuntimeError(f"Failed to download {file_description}: {str(e)}")
+        
+        # Download all three files
+        download_results = {}
+        
+        try:
+            # 1. Download training data (CSV - text)
+            train_result = download_file(
+                args.train_data_cdn_url,
+                args.output_train_data,
+                "Training Data (CSV)",
+                is_binary=False
+            )
+            download_results['train_data'] = train_result
+            
+            # 2. Download test data (CSV - text)
+            test_result = download_file(
+                args.test_data_cdn_url,
+                args.output_test_data,
+                "Test Data (CSV)",
+                is_binary=False
+            )
+            download_results['test_data'] = test_result
+            
+            # 3. Download test ground truth (NPY - binary)
+            test_gt_result = download_file(
+                args.test_ground_truth_cdn_url,
+                args.output_test_ground_truth,
+                "Test Ground Truth (NPY)",
+                is_binary=True
+            )
+            download_results['test_ground_truth'] = test_gt_result
+            
+            # Verify NPY file (basic check)
+            try:
+                import numpy as np
+                gt_data = np.load(args.output_test_ground_truth, allow_pickle=False)
+                print(f"NPY file verification:")
+                print(f"  Shape: {gt_data.shape}")
+                print(f"  Data type: {gt_data.dtype}")
+                print(f"  Min value: {gt_data.min()}")
+                print(f"  Max value: {gt_data.max()}")
+                print("")
+            except Exception as e:
+                print(f"Warning: Could not verify NPY file: {str(e)}")
+                print("")
+            
+            # Create download summary
+            summary = {
+                'timestamp': int(time.time()),
+                'download_status': 'success',
+                'files_downloaded': 3,
+                'total_size_bytes': sum(r['file_size_bytes'] for r in download_results.values()),
+                'total_size_kb': sum(r['file_size_kb'] for r in download_results.values()),
+                'files': download_results
+            }
+            
+            # Save summary
+            os.makedirs(os.path.dirname(args.output_download_summary), exist_ok=True)
+            with open(args.output_download_summary, "w") as f:
+                json.dump(summary, f, indent=2)
+            
+            print("="*80)
+            print("CDN DOWNLOAD COMPLETED SUCCESSFULLY")
+            print("="*80)
+            print(f"Files downloaded: 3")
+            print(f"Total size: {summary['total_size_kb']:.2f} KB")
+            print(f"Training data: {args.output_train_data}")
+            print(f"Test data: {args.output_test_data}")
+            print(f"Test ground truth: {args.output_test_ground_truth}")
+            print("="*80)
+            
+        except Exception as e:
+            print("")
+            print("="*80)
+            print("CDN DOWNLOAD FAILED")
+            print("="*80)
+            print(f"Error: {str(e)}")
+            print("="*80)
+            
+            # Create error summary
+            error_summary = {
+                'timestamp': int(time.time()),
+                'download_status': 'failed',
+                'error': str(e),
+                'files_downloaded': len(download_results),
+                'files': download_results
+            }
+            
+            os.makedirs(os.path.dirname(args.output_download_summary), exist_ok=True)
+            with open(args.output_download_summary, "w") as f:
+                json.dump(error_summary, f, indent=2)
+            
+            raise
+
+    args:
+      - --train_data_cdn_url
+      - {inputValue: train_data_cdn_url}
+      - --test_data_cdn_url
+      - {inputValue: test_data_cdn_url}
+      - --test_ground_truth_cdn_url
+      - {inputValue: test_ground_truth_cdn_url}
+      - --output_train_data
+      - {outputPath: train_data}
+      - --output_test_data
+      - {outputPath: test_data}
+      - --output_test_ground_truth
+      - {outputPath: test_ground_truth}
+      - --output_download_summary
+      - {outputPath: download_summary}
