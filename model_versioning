@@ -103,19 +103,19 @@ implementation:
                 print("="*80)
                 
                 if approved:
-                    print(f"\nValidation Status: APPROVED")
-                    print(f"  Checks Passed: {validation_results.get('checks_passed', 0)}/{validation_results.get('checks_total', 0)}")
-                    print(f"  Decision: {validation_results.get('decision_reason', 'Unknown')}")
+                    print(f'\nValidation Status: APPROVED")
+                    print(f'  Checks Passed: {validation_results.get('checks_passed', 0)}/{validation_results.get('checks_total', 0)}")
+                    print(f'  Decision: {validation_results.get('decision_reason', 'Unknown')}")
                 else:
-                    print(f"\nValidation Status: REJECTED")
-                    print(f"  Checks Passed: {validation_results.get('checks_passed', 0)}/{validation_results.get('checks_total', 0)}")
-                    print(f"  Checks Failed: {validation_results.get('checks_failed', 0)}")
-                    print(f"  Decision: {validation_results.get('decision_reason', 'Unknown')}")
+                    print(f'\nValidation Status: REJECTED")
+                    print(f'  Checks Passed: {validation_results.get('checks_passed', 0)}/{validation_results.get('checks_total', 0)}")
+                    print(f'  Checks Failed: {validation_results.get('checks_failed', 0)}")
+                    print(f'  Decision: {validation_results.get('decision_reason', 'Unknown')}")
                     
                     if validation_results.get('failed_checks'):
-                        print(f"\n  Failed Checks:")
+                        print(f'\n  Failed Checks:")
                         for check in validation_results['failed_checks']:
-                            print(f"    - {check}")
+                            print(f'    - {check}")
                 
                 print("="*80)
                 
@@ -136,7 +136,7 @@ implementation:
                 elif strategy == 'timestamp':
                     return self._generate_timestamp_version()
                 else:
-                    raise ValueError(f"Unknown version strategy: {strategy}")
+                    raise ValueError(f'Unknown version strategy: {strategy}")
             
             def _generate_auto_version(self) -> str:
                 # Auto-increment patch version
@@ -145,7 +145,7 @@ implementation:
                 
                 latest = self.registry['versions'][-1]['version']
                 major, minor, patch = self._parse_version(latest)
-                return f"v{major}.{minor}.{patch + 1}"
+                return f'v{major}.{minor}.{patch + 1}"
             
             def _generate_semantic_version(
                 self,
@@ -168,9 +168,9 @@ implementation:
                 previous_algo = latest_entry.get('algorithm')
                 
                 if current_algo != previous_algo:
-                    print(f"\n  Algorithm changed: {previous_algo} -> {current_algo}")
-                    print(f"  Versioning: Major bump (v{major}.x.x -> v{major+1}.0.0)")
-                    return f"v{major + 1}.0.0"
+                    print(f'\n  Algorithm changed: {previous_algo} -> {current_algo}")
+                    print(f'  Versioning: Major bump (v{major}.x.x -> v{major+1}.0.0)")
+                    return f'v{major + 1}.0.0"
                 
                 # Check for significant metric improvement (minor version bump)
                 current_sil = metrics.get('internal_metrics', {}).get('silhouette_score', 0)
@@ -178,19 +178,19 @@ implementation:
                 
                 improvement = (current_sil - previous_sil) / (previous_sil + 1e-10)
                 if improvement > 0.1:
-                    print(f"\n  Significant improvement: {previous_sil:.3f} -> {current_sil:.3f} (+{improvement*100:.1f}%)")
-                    print(f"  Versioning: Minor bump (v{major}.{minor}.x -> v{major}.{minor+1}.0)")
-                    return f"v{major}.{minor + 1}.0"
+                    print(f'\n  Significant improvement: {previous_sil:.3f} -> {current_sil:.3f} (+{improvement*100:.1f}%)")
+                    print(f'  Versioning: Minor bump (v{major}.{minor}.x -> v{major}.{minor+1}.0)")
+                    return f'v{major}.{minor + 1}.0"
                 
                 # Otherwise patch version
-                print(f"\n  Retrain with similar config")
-                print(f"  Versioning: Patch bump (v{major}.{minor}.{patch} -> v{major}.{minor}.{patch+1})")
-                return f"v{major}.{minor}.{patch + 1}"
+                print(f'\n  Retrain with similar config")
+                print(f'  Versioning: Patch bump (v{major}.{minor}.{patch} -> v{major}.{minor}.{patch+1})")
+                return f'v{major}.{minor}.{patch + 1}"
             
             def _generate_timestamp_version(self) -> str:
                 # Generate version based on timestamp
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                return f"v{timestamp}"
+                return f'v{timestamp}"
             
             def _parse_version(self, version: str) -> Tuple[int, int, int]:
                 # Parse version string to (major, minor, patch)
@@ -222,17 +222,17 @@ implementation:
                 print("MODEL VERSIONING")
                 print("="*80)
                 
-                print(f"\nVersion: {version}")
+                print(f'\nVersion: {version}")
                 
                 # Calculate model hash
                 model_hash = self._calculate_file_hash(model_path)
-                print(f"Model hash: {model_hash[:16]}...")
+                print(f'Model hash: {model_hash[:16]}...")
                 
                 # Copy model to versioned location
                 os.makedirs(os.path.dirname(output_model_path), exist_ok=True)
                 shutil.copy2(model_path, output_model_path)
                 model_size = os.path.getsize(output_model_path) / 1024
-                print(f"Model copied: {output_model_path} ({model_size:.2f} KB)")
+                print(f'Model copied: {output_model_path} ({model_size:.2f} KB)")
                 
                 # Extract key information
                 algorithm = training_metadata.get('algorithm', 'unknown')
@@ -293,7 +293,7 @@ implementation:
                     json.dump(version_metadata, f, indent=2)
                 
                 metadata_size = os.path.getsize(output_metadata_path) / 1024
-                print(f"Metadata saved: {output_metadata_path} ({metadata_size:.2f} KB)")
+                print(f'Metadata saved: {output_metadata_path} ({metadata_size:.2f} KB)")
                 
                 # Update registry
                 registry_entry = {
@@ -313,7 +313,7 @@ implementation:
                 self.registry['total_models_approved'] += 1
                 self._save_registry()
                 
-                print(f"Registry updated: {self.registry_path}")
+                print(f'Registry updated: {self.registry_path}")
                 
                 # Print summary
                 self._print_version_summary(version_metadata)
@@ -331,28 +331,28 @@ implementation:
             def _print_version_summary(self, metadata: Dict[str, Any]):
                 # Print version summary
                 print("\n" + "="*80)
-                print(f"MODEL VERSION: {metadata['version']}")
+                print(f'MODEL VERSION: {metadata['version']}")
                 print("="*80)
                 
-                print(f"\nModel Information:")
-                print(f"  Algorithm: {metadata['training']['algorithm']}")
-                print(f"  Clusters: {metadata['training']['n_clusters']}")
-                print(f"  Training samples: {metadata['training']['train_samples']}")
-                print(f"  Features: {metadata['training']['n_features']}")
+                print(f'\nModel Information:")
+                print(f'  Algorithm: {metadata['training']['algorithm']}")
+                print(f'  Clusters: {metadata['training']['n_clusters']}")
+                print(f'  Training samples: {metadata['training']['train_samples']}")
+                print(f'  Features: {metadata['training']['n_features']}")
                 
-                print(f"\nQuality Metrics:")
-                print(f"  Silhouette Score: {metadata['evaluation']['silhouette_score']:.4f}")
-                print(f"  Davies-Bouldin: {metadata['evaluation']['davies_bouldin_score']:.4f}")
-                print(f"  Separation Ratio: {metadata['evaluation']['separation_ratio']:.4f}")
+                print(f'\nQuality Metrics:")
+                print(f'  Silhouette Score: {metadata['evaluation']['silhouette_score']:.4f}")
+                print(f'  Davies-Bouldin: {metadata['evaluation']['davies_bouldin_score']:.4f}")
+                print(f'  Separation Ratio: {metadata['evaluation']['separation_ratio']:.4f}")
                 
-                print(f"\nValidation Status:")
-                print(f"  Approved: {'YES' if metadata['validation']['deploy_approved'] else 'NO'}")
-                print(f"  Checks Passed: {metadata['validation']['checks_passed']}/{metadata['validation']['checks_total']}")
+                print(f'\nValidation Status:")
+                print(f'  Approved: {'YES' if metadata['validation']['deploy_approved'] else 'NO'}")
+                print(f'  Checks Passed: {metadata['validation']['checks_passed']}/{metadata['validation']['checks_total']}")
                 
-                print(f"\nProvenance:")
-                print(f"  Created: {metadata['created_at']}")
-                print(f"  Hash: {metadata['model_hash'][:16]}...")
-                print(f"  Status: {metadata['status']}")
+                print(f'\nProvenance:")
+                print(f'  Created: {metadata['created_at']}")
+                print(f'  Hash: {metadata['model_hash'][:16]}...")
+                print(f'  Status: {metadata['status']}")
                 
                 print("="*80)
             
@@ -371,15 +371,15 @@ implementation:
         
         def load_json(filepath: str, description: str) -> Dict[str, Any]:
             # Load JSON file
-            print(f"\nLoading {description} from: {filepath}")
+            print(f'\nLoading {description} from: {filepath}")
             
             if not os.path.exists(filepath):
-                raise FileNotFoundError(f"{description} not found: {filepath}")
+                raise FileNotFoundError(f'{description} not found: {filepath}")
             
             with open(filepath, 'r') as f:
                 data = json.load(f)
             
-            print(f"Loaded successfully")
+            print(f'Loaded successfully")
             return data
         
         
@@ -469,14 +469,14 @@ implementation:
                 # Generate or use provided version
                 if args.version:
                     version = args.version
-                    print(f"\nUsing manual version: {version}")
+                    print(f'\nUsing manual version: {version}")
                 else:
                     version = versioning.generate_version(
                         strategy=args.version_strategy,
                         metadata=training_metadata,
                         metrics=evaluation_results
                     )
-                    print(f"\nGenerated version ({args.version_strategy}): {version}")
+                    print(f'\nGenerated version ({args.version_strategy}): {version}")
                 
                 # Version the model
                 result = versioning.version_model(
@@ -495,11 +495,11 @@ implementation:
                 with open(args.output_versioning_result, 'w') as f:
                     json.dump(result, f, indent=2)
                 
-                print(f"\nVersioning result saved: {args.output_versioning_result}")
+                print(f'\nVersioning result saved: {args.output_versioning_result}")
                 
                 # Copy registry to output
                 shutil.copy2(args.registry_path, args.output_model_registry)
-                print(f"Model registry saved: {args.output_model_registry}")
+                print(f'Model registry saved: {args.output_model_registry}")
                 
                 # Get registry info
                 registry_info = versioning.get_registry_info()
@@ -509,28 +509,28 @@ implementation:
                 print("VERSIONING SUMMARY")
                 print("="*80)
                 
-                print(f"\nModel Successfully Versioned:")
-                print(f"  Version: {result['version']}")
-                print(f"  Model: {result['model_path']}")
-                print(f"  Metadata: {result['metadata_path']}")
-                print(f"  Validation Approved: {'YES' if result['validation_approved'] else 'NO'}")
+                print(f'\nModel Successfully Versioned:")
+                print(f'  Version: {result['version']}")
+                print(f'  Model: {result['model_path']}")
+                print(f'  Metadata: {result['metadata_path']}")
+                print(f'  Validation Approved: {'YES' if result['validation_approved'] else 'NO'}")
                 
-                print(f"\nModel Registry:")
-                print(f"  Total versions: {registry_info['total_versions']}")
-                print(f"  Total trained: {registry_info['total_trained']}")
-                print(f"  Total approved: {registry_info['total_approved']}")
-                print(f"  Latest: {registry_info['latest_version']}")
+                print(f'\nModel Registry:")
+                print(f'  Total versions: {registry_info['total_versions']}")
+                print(f'  Total trained: {registry_info['total_trained']}")
+                print(f'  Total approved: {registry_info['total_approved']}")
+                print(f'  Latest: {registry_info['latest_version']}")
                 
-                print(f"\nNext Steps:")
-                print(f"  1. Review version metadata")
-                print(f"  2. Ready for deployment to production")
-                print(f"  3. Set up monitoring and alerting")
+                print(f'\nNext Steps:")
+                print(f'  1. Review version metadata")
+                print(f'  2. Ready for deployment to production")
+                print(f'  3. Set up monitoring and alerting")
                 
                 print("="*80 + "\n")
                 print("MODEL VERSIONING COMPLETED SUCCESSFULLY")
                 
             except Exception as e:
-                print(f"\nERROR: {str(e)}")
+                print(f'\nERROR: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 sys.exit(1)
