@@ -1,37 +1,19 @@
-name: Clustering Model Validation Gate Component
+name: Clustering Model Validation Gate Component (Improved)
 description: |
   Quality gate for clustering models that checks if a trained model meets minimum quality thresholds
   before approving it for deployment. Validates silhouette score, separation ratio, Davies-Bouldin index,
   cluster sizes, and noise percentage against configurable thresholds.
+  
+  Simplified version with JSON thresholds input instead of individual parameters.
 
 inputs:
   - name: evaluation_results
     type: Data
     description: 'Evaluation results JSON from model evaluation component'
   - name: thresholds
-    type: Data
-    description: 'Custom quality thresholds JSON file (optional, uses defaults if not provided)'
-    optional: true
-  - name: silhouette_min
     type: String
-    description: 'Minimum silhouette score threshold'
-    default: '0.25'
-  - name: separation_ratio_min
-    type: String
-    description: 'Minimum separation ratio threshold'
-    default: '1.5'
-  - name: davies_bouldin_max
-    type: String
-    description: 'Maximum Davies-Bouldin index threshold'
-    default: '2.0'
-  - name: min_cluster_size
-    type: String
-    description: 'Minimum cluster size threshold'
-    default: '5'
-  - name: max_noise_percentage
-    type: String
-    description: 'Maximum noise percentage threshold'
-    default: '10.0'
+    description: 'Quality thresholds as JSON string (e.g., {"silhouette_min": 0.5, "separation_ratio_min": 2.0}). Uses defaults if empty.'
+    default: '{}'
 
 outputs:
   - name: validation_result
@@ -342,8 +324,8 @@ implementation:
             return results
         
         
-        def load_thresholds(filepath: str = None, cli_thresholds: Dict = None) -> Dict[str, float]:
-            # Load thresholds from file, CLI args, or use defaults
+        def parse_thresholds(thresholds_json: str) -> Dict[str, float]:
+            # Parse thresholds from JSON string
             
             # Default thresholds
             default_thresholds = {
@@ -354,32 +336,25 @@ implementation:
                 'max_noise_percentage': 10.0
             }
             
-            # Start with defaults
-            thresholds = default_thresholds.copy()
-            
-            # Override with file if provided
-            if filepath and os.path.exists(filepath):
-                print(f"\nLoading custom thresholds from: {filepath}")
-                try:
-                    with open(filepath, 'r') as f:
-                        custom_thresholds = json.load(f)
+            # Parse JSON
+            try:
+                if thresholds_json and thresholds_json.strip() and thresholds_json != '{}':
+                    custom_thresholds = json.loads(thresholds_json)
+                    print(f"\nCustom thresholds provided:")
+                    for key, value in custom_thresholds.items():
+                        print(f"  {key}: {value}")
                     
-                    # Extract only threshold values
-                    threshold_keys = ['silhouette_min', 'separation_ratio_min', 'davies_bouldin_max',
-                                    'min_cluster_size', 'max_noise_percentage']
-                    
-                    filtered_thresholds = {k: v for k, v in custom_thresholds.items() if k in threshold_keys}
-                    thresholds.update(filtered_thresholds)
-                    print(f"Loaded successfully")
-                except Exception as e:
-                    print(f"Error loading thresholds: {e}")
-                    print(f"Using default thresholds")
+                    # Merge with defaults (custom overrides defaults)
+                    thresholds = {**default_thresholds, **custom_thresholds}
+                else:
+                    print(f"\nUsing default thresholds")
+                    thresholds = default_thresholds
+            except json.JSONDecodeError as e:
+                print(f"\nWarning: Invalid JSON in thresholds, using defaults")
+                print(f"Error: {e}")
+                thresholds = default_thresholds
             
-            # Override with CLI args if provided
-            if cli_thresholds:
-                thresholds.update(cli_thresholds)
-            
-            # Print thresholds
+            # Print final thresholds
             print("\nQuality Thresholds:")
             for key, value in thresholds.items():
                 print(f"  {key}: {value}")
@@ -438,20 +413,8 @@ implementation:
             # Input arguments
             parser.add_argument('--evaluation_results', required=True,
                                help='Path to evaluation results JSON')
-            parser.add_argument('--thresholds', default='',
-                               help='Path to custom thresholds JSON (optional)')
-            
-            # Individual threshold arguments
-            parser.add_argument('--silhouette_min', type=str, default='0.25',
-                               help='Minimum silhouette score')
-            parser.add_argument('--separation_ratio_min', type=str, default='1.5',
-                               help='Minimum separation ratio')
-            parser.add_argument('--davies_bouldin_max', type=str, default='2.0',
-                               help='Maximum Davies-Bouldin index')
-            parser.add_argument('--min_cluster_size', type=str, default='5',
-                               help='Minimum cluster size')
-            parser.add_argument('--max_noise_percentage', type=str, default='10.0',
-                               help='Maximum noise percentage')
+            parser.add_argument('--thresholds', default='{}',
+                               help='Thresholds as JSON string')
             
             # Output arguments
             parser.add_argument('--output_validation_result', required=True,
@@ -469,20 +432,8 @@ implementation:
                 # Load evaluation results
                 evaluation_results = load_evaluation_results(args.evaluation_results)
                 
-                # Build CLI thresholds
-                cli_thresholds = {
-                    'silhouette_min': float(args.silhouette_min),
-                    'separation_ratio_min': float(args.separation_ratio_min),
-                    'davies_bouldin_max': float(args.davies_bouldin_max),
-                    'min_cluster_size': int(args.min_cluster_size),
-                    'max_noise_percentage': float(args.max_noise_percentage)
-                }
-                
-                # Load thresholds
-                thresholds = load_thresholds(
-                    args.thresholds if args.thresholds else None,
-                    cli_thresholds
-                )
+                # Parse thresholds from JSON
+                thresholds = parse_thresholds(args.thresholds)
                 
                 # Run validation gate
                 gate = ValidationGate(thresholds)
@@ -527,17 +478,7 @@ implementation:
       - --evaluation_results
       - {inputPath: evaluation_results}
       - --thresholds
-      - {inputPath: thresholds}
-      - --silhouette_min
-      - {inputValue: silhouette_min}
-      - --separation_ratio_min
-      - {inputValue: separation_ratio_min}
-      - --davies_bouldin_max
-      - {inputValue: davies_bouldin_max}
-      - --min_cluster_size
-      - {inputValue: min_cluster_size}
-      - --max_noise_percentage
-      - {inputValue: max_noise_percentage}
+      - {inputValue: thresholds}
       - --output_validation_result
       - {outputPath: validation_result}
       - --output_deploy_approved
