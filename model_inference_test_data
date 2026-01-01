@@ -59,62 +59,62 @@ implementation:
         def load_model(model_path):
             # Load trained clustering model
             # Returns: Loaded model object
-            print(f"\nLoading model from: {model_path}")
+            print(f'\nLoading model from: {model_path}")
             
             try:
                 with open(model_path, 'rb') as f:
                     model = pickle.load(f)
                 
-                print(f"Model loaded successfully")
+                print(f'Model loaded successfully")
                 
                 # Check model type
                 if isinstance(model, dict):
                     if 'algorithm' in model and model['algorithm'] == 'FuzzyCMeans':
-                        print(f"Model type: Fuzzy C-Means (functional)")
+                        print(f'Model type: Fuzzy C-Means (functional)")
                     else:
-                        print(f"Model type: Custom dictionary")
+                        print(f'Model type: Custom dictionary")
                 else:
-                    print(f"Model type: {type(model).__name__}")
+                    print(f'Model type: {type(model).__name__}")
                 
                 return model
                 
             except Exception as e:
-                print(f"Error loading model: {str(e)}")
+                print(f'Error loading model: {str(e)}")
                 raise
         
         
         def load_metadata(metadata_path):
             # Load training metadata
             # Returns: Metadata dictionary
-            print(f"\nLoading metadata from: {metadata_path}")
+            print(f'\nLoading metadata from: {metadata_path}")
             
             try:
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
                 
-                print(f"Metadata loaded successfully")
-                print(f"Algorithm: {metadata.get('algorithm', 'Unknown')}")
-                print(f"Category: {metadata.get('category', 'Unknown')}")
+                print(f'Metadata loaded successfully")
+                print(f'Algorithm: {metadata.get('algorithm', 'Unknown')}")
+                print(f'Category: {metadata.get('category', 'Unknown')}")
                 
                 # Show inference capability
                 capabilities = metadata.get('capabilities', {})
                 has_predict = capabilities.get('has_predict', False)
                 preferred_inference = capabilities.get('preferred_inference', 'unknown')
                 
-                print(f"Has native predict: {has_predict}")
-                print(f"Preferred inference: {preferred_inference}")
+                print(f'Has native predict: {has_predict}")
+                print(f'Preferred inference: {preferred_inference}")
                 
                 return metadata
                 
             except Exception as e:
-                print(f"Error loading metadata: {str(e)}")
+                print(f'Error loading metadata: {str(e)}")
                 raise
         
         
         def load_data(data_path):
             # Load test data
             # Returns: numpy array
-            print(f"\nLoading test data from: {data_path}")
+            print(f'\nLoading test data from: {data_path}")
             
             try:
                 if data_path.endswith('.csv'):
@@ -125,25 +125,25 @@ implementation:
                 else:
                     raise ValueError("Unsupported format. Use .csv or .npy")
                 
-                print(f"Loaded successfully")
-                print(f"Shape: {data.shape[0]} samples x {data.shape[1]} features")
+                print(f'Loaded successfully")
+                print(f'Shape: {data.shape[0]} samples x {data.shape[1]} features")
                 
                 # Validate
                 if not np.isfinite(data).all():
                     n_invalid = (~np.isfinite(data)).sum()
-                    raise ValueError(f"Test data contains {n_invalid} NaN/Inf values")
+                    raise ValueError(f'Test data contains {n_invalid} NaN/Inf values")
                 
                 return data
                 
             except Exception as e:
-                print(f"Error loading data: {str(e)}")
+                print(f'Error loading data: {str(e)}")
                 raise
         
         
         def load_training_data(train_data_path, train_labels_path):
             # Load training data and labels (needed for some inference methods)
             # Returns: tuple (train_data, train_labels)
-            print(f"\nLoading training reference data...")
+            print(f'\nLoading training reference data...")
             
             try:
                 # Check if paths exist and are valid
@@ -161,64 +161,64 @@ implementation:
                 else:
                     raise ValueError("Unsupported format for training data")
                 
-                print(f"Training data: {X_train.shape}")
+                print(f'Training data: {X_train.shape}")
                 
                 # Load training labels
                 train_labels = np.load(train_labels_path)
-                print(f"Training labels: {len(train_labels)} samples")
+                print(f'Training labels: {len(train_labels)} samples")
                 
                 # Validate
                 if len(X_train) != len(train_labels):
                     raise ValueError(
-                        f"Training data and labels size mismatch: "
-                        f"data={len(X_train)}, labels={len(train_labels)}"
+                        f'Training data and labels size mismatch: "
+                        f'data={len(X_train)}, labels={len(train_labels)}"
                     )
                 
                 return X_train, train_labels
                 
             except Exception as e:
-                print(f"Warning: Could not load training data: {str(e)}")
+                print(f'Warning: Could not load training data: {str(e)}")
                 return None, None
         
         
         def validate_test_data(X_test, metadata):
             # Validate test data against training metadata
-            print(f"\nValidating test data...")
+            print(f'\nValidating test data...")
             
             expected_features = metadata['training_results']['n_features']
             actual_features = X_test.shape[1]
             
             if actual_features != expected_features:
                 raise ValueError(
-                    f"Feature mismatch: model expects {expected_features} features, "
-                    f"test data has {actual_features} features"
+                    f'Feature mismatch: model expects {expected_features} features, "
+                    f'test data has {actual_features} features"
                 )
             
-            print(f"Features match: {actual_features}")
-            print(f"Test samples: {X_test.shape[0]}")
+            print(f'Features match: {actual_features}")
+            print(f'Test samples: {X_test.shape[0]}")
         
         
         def predict_native(model, X_test, algorithm_name):
             # Predict using native model.predict() method
             # Returns: Test predictions
-            print(f"\n[Method: Native Predict]")
-            print(f"Using model.predict()...")
+            print(f'\n[Method: Native Predict]")
+            print(f'Using model.predict()...")
             
             try:
                 predictions = model.predict(X_test)
-                print(f"Predictions generated: {len(predictions)} samples")
+                print(f'Predictions generated: {len(predictions)} samples")
                 return predictions
                 
             except Exception as e:
-                print(f"Native predict failed: {str(e)}")
+                print(f'Native predict failed: {str(e)}")
                 raise
         
         
         def predict_nearest_neighbor(model, X_test, X_train, train_labels, algorithm_name, metadata):
             # Predict using nearest neighbor assignment
             # Returns: Test predictions
-            print(f"\n[Method: Nearest Neighbor]")
-            print(f"Finding nearest training sample for each test sample...")
+            print(f'\n[Method: Nearest Neighbor]")
+            print(f'Finding nearest training sample for each test sample...")
             
             from sklearn.neighbors import NearestNeighbors
             
@@ -232,7 +232,7 @@ implementation:
             # Assign labels based on nearest neighbor
             predictions = train_labels[indices.flatten()]
             
-            print(f"Assigned labels based on nearest neighbors")
+            print(f'Assigned labels based on nearest neighbors")
             
             # Handle noise for density-based algorithms
             capabilities = metadata.get('capabilities', {})
@@ -255,7 +255,7 @@ implementation:
                     n_noise = noise_mask.sum()
                     if n_noise > 0:
                         predictions[noise_mask] = -1
-                        print(f"Marked {n_noise} points as noise (distance > {threshold_name}={threshold:.4f})")
+                        print(f'Marked {n_noise} points as noise (distance > {threshold_name}={threshold:.4f})")
             
             return predictions
         
@@ -263,54 +263,54 @@ implementation:
         def predict_refit(model, X_test, X_train, train_labels, algorithm_name, metadata):
             # Predict by refitting on combined train+test data
             # Returns: Test predictions
-            print(f"\n[Method: Refit]")
-            print(f"Warning: This will refit the model on combined data")
-            print(f"Combining train and test data...")
+            print(f'\n[Method: Refit]")
+            print(f'Warning: This will refit the model on combined data")
+            print(f'Combining train and test data...")
             
             # Combine data
             X_combined = np.vstack([X_train, X_test])
-            print(f"Combined shape: {X_combined.shape}")
+            print(f'Combined shape: {X_combined.shape}")
             
             try:
                 if hasattr(model, 'fit_predict'):
-                    print(f"Using fit_predict()...")
+                    print(f'Using fit_predict()...")
                     combined_labels = model.fit_predict(X_combined)
                 elif hasattr(model, 'fit'):
-                    print(f"Using fit()...")
+                    print(f'Using fit()...")
                     model.fit(X_combined)
                     if hasattr(model, 'labels_'):
                         combined_labels = model.labels_
                     else:
                         combined_labels = model.predict(X_combined)
                 else:
-                    raise ValueError(f"Cannot refit {algorithm_name}")
+                    raise ValueError(f'Cannot refit {algorithm_name}")
                 
                 # Extract test predictions
                 test_predictions = combined_labels[len(X_train):]
                 
-                print(f"Refit complete")
-                print(f"Note: Training cluster assignments may have changed")
+                print(f'Refit complete")
+                print(f'Note: Training cluster assignments may have changed")
                 
                 return test_predictions
                 
             except Exception as e:
-                print(f"Refit failed: {str(e)}")
+                print(f'Refit failed: {str(e)}")
                 raise
         
         
         def predict_approximate_hdbscan(model, X_test):
             # Predict using HDBSCAN's approximate_predict
             # Returns: Test predictions
-            print(f"\n[Method: HDBSCAN Approximate Predict]")
+            print(f'\n[Method: HDBSCAN Approximate Predict]")
             
             try:
                 import hdbscan
                 
-                print(f"Using hdbscan.approximate_predict()...")
+                print(f'Using hdbscan.approximate_predict()...")
                 test_labels, strengths = hdbscan.approximate_predict(model, X_test)
                 
-                print(f"Predictions generated")
-                print(f"Prediction strengths: min={strengths.min():.3f}, max={strengths.max():.3f}")
+                print(f'Predictions generated")
+                print(f'Prediction strengths: min={strengths.min():.3f}, max={strengths.max():.3f}")
                 
                 return test_labels
                 
@@ -319,19 +319,19 @@ implementation:
                     "HDBSCAN package not installed. Install with: pip install hdbscan"
                 )
             except Exception as e:
-                print(f"HDBSCAN approximate_predict failed: {str(e)}")
+                print(f'HDBSCAN approximate_predict failed: {str(e)}")
                 raise
         
         
         def predict_fuzzy_cmeans(model, X_test):
             # Predict using Fuzzy C-Means
             # Returns: Test predictions
-            print(f"\n[Method: Fuzzy C-Means Function Call]")
+            print(f'\n[Method: Fuzzy C-Means Function Call]")
             
             try:
                 import skfuzzy as fuzz
                 
-                print(f"Using skfuzzy.cmeans_predict()...")
+                print(f'Using skfuzzy.cmeans_predict()...")
                 
                 # Get parameters from model
                 centers = model['centers']
@@ -352,7 +352,7 @@ implementation:
                 # Get hard labels (max membership)
                 test_labels = np.argmax(u, axis=0)
                 
-                print(f"Predictions generated")
+                print(f'Predictions generated")
                 
                 return test_labels
                 
@@ -361,7 +361,7 @@ implementation:
                     "scikit-fuzzy package not installed. Install with: pip install scikit-fuzzy"
                 )
             except Exception as e:
-                print(f"Fuzzy C-Means predict failed: {str(e)}")
+                print(f'Fuzzy C-Means predict failed: {str(e)}")
                 raise
         
         
@@ -371,20 +371,20 @@ implementation:
             algorithm_name = metadata['algorithm']
             capabilities = metadata.get('capabilities', {})
             
-            print(f"\nStarting inference for {algorithm_name}...")
-            print(f"Inference mode: {inference_mode}")
+            print(f'\nStarting inference for {algorithm_name}...")
+            print(f'Inference mode: {inference_mode}")
             
             # Determine inference mode
             if inference_mode == 'auto':
                 inference_mode = capabilities.get('preferred_inference', 'native')
-                print(f"Auto-selected mode: {inference_mode}")
+                print(f'Auto-selected mode: {inference_mode}")
             
             # Run inference based on mode
             if inference_mode == 'native':
                 if not capabilities.get('has_predict', False):
                     raise ValueError(
-                        f"{algorithm_name} does not support native predict(). "
-                        f"Try: nearest_neighbor or refit mode"
+                        f'{algorithm_name} does not support native predict(). "
+                        f'Try: nearest_neighbor or refit mode"
                     )
                 predictions = predict_native(model, X_test, algorithm_name)
             
@@ -411,19 +411,19 @@ implementation:
             elif inference_mode == 'approximate_predict':
                 if algorithm_name != 'HDBSCAN':
                     raise ValueError(
-                        f"approximate_predict only works with HDBSCAN, not {algorithm_name}"
+                        f'approximate_predict only works with HDBSCAN, not {algorithm_name}"
                     )
                 predictions = predict_approximate_hdbscan(model, X_test)
             
             elif inference_mode == 'function_call':
                 if algorithm_name != 'FuzzyCMeans':
                     raise ValueError(
-                        f"function_call only works with FuzzyCMeans, not {algorithm_name}"
+                        f'function_call only works with FuzzyCMeans, not {algorithm_name}"
                     )
                 predictions = predict_fuzzy_cmeans(model, X_test)
             
             else:
-                raise ValueError(f"Unknown inference mode: {inference_mode}")
+                raise ValueError(f'Unknown inference mode: {inference_mode}")
             
             return predictions
         
@@ -431,7 +431,7 @@ implementation:
         def analyze_predictions(predictions):
             # Analyze prediction results
             # Returns: dict with prediction statistics
-            print(f"\nAnalyzing predictions...")
+            print(f'\nAnalyzing predictions...")
             
             unique_labels = np.unique(predictions)
             n_clusters = len(unique_labels[unique_labels != -1])
@@ -445,26 +445,26 @@ implementation:
                 'cluster_sizes': {}
             }
             
-            print(f"Predictions: {len(predictions)} samples")
-            print(f"Clusters: {n_clusters}")
+            print(f'Predictions: {len(predictions)} samples")
+            print(f'Clusters: {n_clusters}")
             
             if n_noise > 0:
-                print(f"Noise points: {n_noise} ({stats['noise_percentage']:.1f}%)")
+                print(f'Noise points: {n_noise} ({stats['noise_percentage']:.1f}%)")
             
-            print(f"\nCluster distribution:")
+            print(f'\nCluster distribution:")
             for label in sorted(unique_labels):
                 count = np.sum(predictions == label)
                 pct = count / len(predictions) * 100
-                label_name = "Noise" if label == -1 else f"Cluster {label}"
+                label_name = "Noise" if label == -1 else f'Cluster {label}"
                 stats['cluster_sizes'][int(label)] = int(count)
-                print(f"  {label_name}: {count:>5} samples ({pct:>5.1f}%)")
+                print(f'  {label_name}: {count:>5} samples ({pct:>5.1f}%)")
             
             return stats
         
         
         def save_predictions(predictions, stats, metadata, pred_path, meta_path):
             # Save predictions and statistics
-            print(f"\nSaving predictions...")
+            print(f'\nSaving predictions...")
             
             # Ensure directories exist
             os.makedirs(os.path.dirname(pred_path), exist_ok=True)
@@ -472,7 +472,7 @@ implementation:
             
             # Save predictions
             np.save(pred_path, predictions)
-            print(f"Predictions saved: {pred_path}")
+            print(f'Predictions saved: {pred_path}")
             
             # Save prediction metadata
             pred_metadata = {
@@ -486,7 +486,7 @@ implementation:
                 json.dump(pred_metadata, f, indent=2)
             
             file_size = os.path.getsize(meta_path) / 1024
-            print(f"Metadata saved: {meta_path} ({file_size:.2f} KB)")
+            print(f'Metadata saved: {meta_path} ({file_size:.2f} KB)")
         
         
         def main():
@@ -521,13 +521,13 @@ implementation:
                 print("UNIVERSAL CLUSTERING MODEL INFERENCE")
                 print("="*80)
                 
-                print(f"\nConfiguration:")
-                print(f"  Model: {args.model}")
-                print(f"  Metadata: {args.metadata}")
-                print(f"  Test data: {args.test_data}")
-                print(f"  Train data ref: {args.train_data_ref if args.train_data_ref else 'Not provided'}")
-                print(f"  Train labels: {args.train_labels if args.train_labels else 'Not provided'}")
-                print(f"  Inference mode: {args.inference_mode}")
+                print(f'\nConfiguration:")
+                print(f'  Model: {args.model}")
+                print(f'  Metadata: {args.metadata}")
+                print(f'  Test data: {args.test_data}")
+                print(f'  Train data ref: {args.train_data_ref if args.train_data_ref else 'Not provided'}")
+                print(f'  Train labels: {args.train_labels if args.train_labels else 'Not provided'}")
+                print(f'  Inference mode: {args.inference_mode}")
                 
                 # Load model
                 model = load_model(args.model)
@@ -552,8 +552,8 @@ implementation:
                     )
                 elif args.inference_mode in ['nearest_neighbor', 'refit']:
                     raise ValueError(
-                        f"Inference mode '{args.inference_mode}' requires training data. "
-                        f"Provide train_data_ref and train_labels"
+                        f'Inference mode '{args.inference_mode}' requires training data. "
+                        f'Provide train_data_ref and train_labels"
                     )
                 
                 # Run inference
@@ -577,23 +577,23 @@ implementation:
                 )
                 
                 # Final summary
-                print(f"\n" + "="*80)
+                print(f'\n" + "="*80)
                 print("INFERENCE COMPLETED SUCCESSFULLY")
                 print("="*80)
-                print(f"\nSummary:")
-                print(f"  Algorithm: {metadata['algorithm']}")
-                print(f"  Test samples: {X_test.shape[0]}")
-                print(f"  Clusters assigned: {stats['n_clusters']}")
+                print(f'\nSummary:")
+                print(f'  Algorithm: {metadata['algorithm']}")
+                print(f'  Test samples: {X_test.shape[0]}")
+                print(f'  Clusters assigned: {stats['n_clusters']}")
                 if stats['n_noise'] > 0:
-                    print(f"  Noise points: {stats['n_noise']} ({stats['noise_percentage']:.1f}%)")
+                    print(f'  Noise points: {stats['n_noise']} ({stats['noise_percentage']:.1f}%)")
                 
-                print(f"\nOutput files created:")
-                print(f"  Predictions: {args.output_test_predictions}")
-                print(f"  Metadata: {args.output_prediction_metadata}")
+                print(f'\nOutput files created:")
+                print(f'  Predictions: {args.output_test_predictions}")
+                print(f'  Metadata: {args.output_prediction_metadata}")
                 print("="*80 + "\n")
                 
             except Exception as e:
-                print(f"\nERROR: {str(e)}")
+                print(f'\nERROR: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 sys.exit(1)
