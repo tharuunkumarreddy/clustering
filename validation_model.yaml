@@ -39,37 +39,28 @@ implementation:
         
         
         class ValidationGate:
-            # Quality gate for clustering models
-            # Checks metrics against thresholds and approves/rejects deployment
             
-            def __init__(self, thresholds: Dict[str, float]):
-                # Initialize validation gate with quality thresholds
+            def __init__(self, thresholds):
                 self.thresholds = thresholds
                 self.checks = []
                 self.failed_checks = []
             
-            def run_checks(self, evaluation_metrics: Dict[str, Any]) -> Dict[str, Any]:
-                # Run all validation checks on evaluation metrics
-                # Returns: Validation result with decision and detailed checks
+            def run_checks(self, evaluation_metrics):
                 print("\n" + "="*80)
                 print("VALIDATION GATE - MODEL QUALITY CHECK")
                 print("="*80)
                 
-                # Reset checks
                 self.checks = []
                 self.failed_checks = []
                 
-                # Run all checks
                 self._check_silhouette(evaluation_metrics)
                 self._check_separation_ratio(evaluation_metrics)
                 self._check_davies_bouldin(evaluation_metrics)
                 self._check_cluster_sizes(evaluation_metrics)
                 self._check_noise_percentage(evaluation_metrics)
                 
-                # Make deployment decision
                 all_passed = len(self.failed_checks) == 0
                 
-                # Print final decision
                 print("\n" + "="*80)
                 if all_passed:
                     print("VALIDATION GATE: APPROVED FOR DEPLOYMENT")
@@ -77,11 +68,10 @@ implementation:
                     recommendation = "Model is ready for production deployment"
                 else:
                     print("VALIDATION GATE: REJECTED - QUALITY ISSUES DETECTED")
-                    decision_reason = f'Failed {len(self.failed_checks)} checks'
+                    decision_reason = 'Failed ' + str(len(self.failed_checks)) + ' checks'
                     recommendation = "Retrain model with different parameters or algorithm"
                 print("="*80)
                 
-                # Create result
                 result = {
                     'deploy_approved': all_passed,
                     'checks_passed': len([c for c in self.checks if c['passed']]),
@@ -97,16 +87,13 @@ implementation:
                 
                 return result
             
-            def _check_silhouette(self, metrics: Dict[str, Any]):
-                # Check silhouette score (higher is better)
+            def _check_silhouette(self, metrics):
                 metric_name = 'Silhouette Score'
                 
-                # Get metric value
                 internal_metrics = metrics.get('internal_metrics', {})
                 value = internal_metrics.get('silhouette_score')
                 threshold = self.thresholds.get('silhouette_min', 0.25)
                 
-                # Perform check
                 if value is not None:
                     passed = value >= threshold
                     status = 'PASS' if passed else 'FAIL'
@@ -114,11 +101,10 @@ implementation:
                     passed = False
                     status = 'MISSING'
                 
-                # Record check
                 check = {
                     'name': metric_name,
                     'value': value,
-                    'threshold': f'>= {threshold}',
+                    'threshold': '>= ' + str(threshold),
                     'passed': passed,
                     'status': status
                 }
@@ -126,31 +112,28 @@ implementation:
                 
                 if not passed:
                     if value is not None:
-                        self.failed_checks.append(f'{metric_name}: {value:.3f} < {threshold}')
+                        self.failed_checks.append(metric_name + ': ' + str(round(value, 3)) + ' < ' + str(threshold))
                     else:
-                        self.failed_checks.append(f'{metric_name}: Missing')
+                        self.failed_checks.append(metric_name + ': Missing')
                 
-                # Print check result
-                print(f'\nCheck 1: {metric_name}')
+                print('')
+                print('Check 1:', metric_name)
                 if value is not None:
-                    print(f'  Value: {value:.4f}')
+                    print('  Value:', round(value, 4))
                 else:
-                    print(f'  Value: N/A')
-                print(f'  Threshold: >= {threshold}')
-                print(f'  Status: {status}')
+                    print('  Value: N/A')
+                print('  Threshold: >=', threshold)
+                print('  Status:', status)
                 if not passed and value is not None:
-                    print(f'  Warning: Quality too low for production!')
+                    print('  Warning: Quality too low for production!')
             
-            def _check_separation_ratio(self, metrics: Dict[str, Any]):
-                # Check separation ratio (higher is better)
+            def _check_separation_ratio(self, metrics):
                 metric_name = 'Separation Ratio'
                 
-                # Get metric value
                 cluster_quality = metrics.get('cluster_quality', {})
                 value = cluster_quality.get('separation_ratio')
                 threshold = self.thresholds.get('separation_ratio_min', 1.5)
                 
-                # Perform check
                 if value is not None:
                     passed = value >= threshold
                     status = 'PASS' if passed else 'FAIL'
@@ -158,11 +141,10 @@ implementation:
                     passed = False
                     status = 'MISSING'
                 
-                # Record check
                 check = {
                     'name': metric_name,
                     'value': value,
-                    'threshold': f'>= {threshold}',
+                    'threshold': '>= ' + str(threshold),
                     'passed': passed,
                     'status': status
                 }
@@ -170,31 +152,28 @@ implementation:
                 
                 if not passed:
                     if value is not None:
-                        self.failed_checks.append(f'{metric_name}: {value:.3f} < {threshold}')
+                        self.failed_checks.append(metric_name + ': ' + str(round(value, 3)) + ' < ' + str(threshold))
                     else:
-                        self.failed_checks.append(f'{metric_name}: Missing')
+                        self.failed_checks.append(metric_name + ': Missing')
                 
-                # Print check result
-                print(f'\nCheck 2: {metric_name}')
+                print('')
+                print('Check 2:', metric_name)
                 if value is not None:
-                    print(f'  Value: {value:.4f}')
+                    print('  Value:', round(value, 4))
                 else:
-                    print(f'  Value: N/A')
-                print(f'  Threshold: >= {threshold}')
-                print(f'  Status: {status}')
+                    print('  Value: N/A')
+                print('  Threshold: >=', threshold)
+                print('  Status:', status)
                 if not passed and value is not None:
-                    print(f'  Warning: Clusters not well separated!')
+                    print('  Warning: Clusters not well separated!')
             
-            def _check_davies_bouldin(self, metrics: Dict[str, Any]):
-                # Check Davies-Bouldin index (lower is better)
+            def _check_davies_bouldin(self, metrics):
                 metric_name = 'Davies-Bouldin Index'
                 
-                # Get metric value
                 internal_metrics = metrics.get('internal_metrics', {})
                 value = internal_metrics.get('davies_bouldin_score')
                 threshold = self.thresholds.get('davies_bouldin_max', 2.0)
                 
-                # Perform check
                 if value is not None:
                     passed = value <= threshold
                     status = 'PASS' if passed else 'FAIL'
@@ -202,11 +181,10 @@ implementation:
                     passed = False
                     status = 'MISSING'
                 
-                # Record check
                 check = {
                     'name': metric_name,
                     'value': value,
-                    'threshold': f'<= {threshold}',
+                    'threshold': '<= ' + str(threshold),
                     'passed': passed,
                     'status': status
                 }
@@ -214,26 +192,24 @@ implementation:
                 
                 if not passed:
                     if value is not None:
-                        self.failed_checks.append(f'{metric_name}: {value:.3f} > {threshold}')
+                        self.failed_checks.append(metric_name + ': ' + str(round(value, 3)) + ' > ' + str(threshold))
                     else:
-                        self.failed_checks.append(f'{metric_name}: Missing')
+                        self.failed_checks.append(metric_name + ': Missing')
                 
-                # Print check result
-                print(f'\nCheck 3: {metric_name}')
+                print('')
+                print('Check 3:', metric_name)
                 if value is not None:
-                    print(f'  Value: {value:.4f}')
+                    print('  Value:', round(value, 4))
                 else:
-                    print(f'  Value: N/A')
-                print(f'  Threshold: <= {threshold}')
-                print(f'  Status: {status}')
+                    print('  Value: N/A')
+                print('  Threshold: <=', threshold)
+                print('  Status:', status)
                 if not passed and value is not None:
-                    print(f'  Warning: Clusters overlap too much!')
+                    print('  Warning: Clusters overlap too much!')
             
-            def _check_cluster_sizes(self, metrics: Dict[str, Any]):
-                # Check minimum cluster size
+            def _check_cluster_sizes(self, metrics):
                 metric_name = 'Minimum Cluster Size'
                 
-                # Get cluster sizes
                 basic_stats = metrics.get('basic_statistics', {})
                 cluster_sizes = basic_stats.get('cluster_sizes', {})
                 
@@ -248,11 +224,10 @@ implementation:
                     passed = False
                     status = 'MISSING'
                 
-                # Record check
                 check = {
                     'name': metric_name,
                     'value': value,
-                    'threshold': f'>= {threshold}',
+                    'threshold': '>= ' + str(threshold),
                     'passed': passed,
                     'status': status
                 }
@@ -260,74 +235,67 @@ implementation:
                 
                 if not passed:
                     if value is not None:
-                        self.failed_checks.append(f'{metric_name}: {value} < {threshold}')
+                        self.failed_checks.append(metric_name + ': ' + str(value) + ' < ' + str(threshold))
                     else:
-                        self.failed_checks.append(f'{metric_name}: Missing')
+                        self.failed_checks.append(metric_name + ': Missing')
                 
-                # Print check result
-                print(f'\nCheck 4: {metric_name}')
+                print('')
+                print('Check 4:', metric_name)
                 if value is not None:
-                    print(f'  Value: {value}')
+                    print('  Value:', value)
                 else:
-                    print(f'  Value: N/A')
-                print(f'  Threshold: >= {threshold}')
-                print(f'  Status: {status}')
+                    print('  Value: N/A')
+                print('  Threshold: >=', threshold)
+                print('  Status:', status)
                 if not passed and value is not None:
-                    print(f'  Warning: Cluster too small - may not be meaningful!')
+                    print('  Warning: Cluster too small - may not be meaningful!')
             
-            def _check_noise_percentage(self, metrics: Dict[str, Any]):
-                # Check noise percentage (for density-based algorithms)
+            def _check_noise_percentage(self, metrics):
                 metric_name = 'Noise Percentage'
                 
-                # Get noise percentage
                 basic_stats = metrics.get('basic_statistics', {})
                 value = basic_stats.get('noise_percentage', 0.0)
                 threshold = self.thresholds.get('max_noise_percentage', 10.0)
                 
-                # Perform check
                 passed = value <= threshold
                 status = 'PASS' if passed else 'FAIL'
                 
-                # Record check
                 check = {
                     'name': metric_name,
                     'value': value,
-                    'threshold': f'<= {threshold}%',
+                    'threshold': '<= ' + str(threshold) + '%',
                     'passed': passed,
                     'status': status
                 }
                 self.checks.append(check)
                 
                 if not passed:
-                    self.failed_checks.append(f'{metric_name}: {value:.1f}% > {threshold}%')
+                    self.failed_checks.append(metric_name + ': ' + str(round(value, 1)) + '% > ' + str(threshold) + '%')
                 
-                # Print check result
-                print(f'\nCheck 5: {metric_name}')
-                print(f'  Value: {value:.2f}%')
-                print(f'  Threshold: <= {threshold}%')
-                print(f'  Status: {status}')
+                print('')
+                print('Check 5:', metric_name)
+                print('  Value:', str(round(value, 2)) + '%')
+                print('  Threshold: <=', str(threshold) + '%')
+                print('  Status:', status)
                 if not passed:
-                    print(f'  Warning: Too many noise points!')
+                    print('  Warning: Too many noise points!')
         
         
-        def load_evaluation_results(filepath: str) -> Dict[str, Any]:
-            # Load evaluation results from JSON file
-            print(f'\nLoading evaluation results from: {filepath}')
+        def load_evaluation_results(filepath):
+            print('')
+            print('Loading evaluation results from:', filepath)
             
             if not os.path.exists(filepath):
-                raise FileNotFoundError(f'Evaluation results not found: {filepath}')
+                raise FileNotFoundError('Evaluation results not found: ' + str(filepath))
             
             with open(filepath, 'r') as f:
                 results = json.load(f)
             
-            print(f'Loaded successfully')
+            print('Loaded successfully')
             return results
         
         
-        def parse_thresholds(thresholds_json: str) -> Dict[str, float]:
-            # Parse thresholds from JSON string
-            
-            # Default thresholds
+        def parse_thresholds(thresholds_json):
             default_thresholds = {
                 'silhouette_min': 0.25,
                 'separation_ratio_min': 1.5,
@@ -336,71 +304,72 @@ implementation:
                 'max_noise_percentage': 10.0
             }
             
-            # Parse JSON
             try:
                 if thresholds_json and thresholds_json.strip() and thresholds_json != '{}':
                     custom_thresholds = json.loads(thresholds_json)
-                    print(f'\nCustom thresholds provided:')
+                    print('')
+                    print('Custom thresholds provided')
                     for key, value in custom_thresholds.items():
-                        print(f'  {key}: {value}')
+                        print(' ', key + ':', value)
                     
-                    # Merge with defaults (custom overrides defaults)
                     thresholds = {**default_thresholds, **custom_thresholds}
                 else:
-                    print(f'\nUsing default thresholds')
+                    print('')
+                    print('Using default thresholds')
                     thresholds = default_thresholds
             except json.JSONDecodeError as e:
-                print(f'\nWarning: Invalid JSON in thresholds, using defaults')
-                print(f'Error: {e}')
+                print('')
+                print('Warning: Invalid JSON in thresholds, using defaults')
+                print('Error:', e)
                 thresholds = default_thresholds
             
-            # Print final thresholds
-            print("\nQuality Thresholds:")
+            print('')
+            print("Quality Thresholds:")
             for key, value in thresholds.items():
-                print(f'  {key}: {value}')
+                print(' ', key + ':', value)
             
             return thresholds
         
         
-        def save_validation_result(result: Dict[str, Any], output_path: str, flag_path: str):
-            # Save validation result to JSON file
+        def save_validation_result(result, output_path, flag_path):
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             os.makedirs(os.path.dirname(flag_path), exist_ok=True)
             
-            # Save full result
             with open(output_path, 'w') as f:
                 json.dump(result, f, indent=2)
             
             file_size = os.path.getsize(output_path) / 1024
             
-            print(f'\nValidation result saved:')
-            print(f'  File: {output_path}')
-            print(f'  Size: {file_size:.2f} KB')
+            print('')
+            print('Validation result saved')
+            print('  File:', output_path)
+            print('  Size:', str(round(file_size, 2)), 'KB')
             
-            # Save simple flag file
             with open(flag_path, 'w') as f:
                 f.write(str(result['deploy_approved']).lower())
             
-            print(f'  Flag: {flag_path} -> {result['deploy_approved']}')
+            print('  Flag:', flag_path, '->', result['deploy_approved'])
         
         
-        def print_summary(result: Dict[str, Any]):
-            # Print validation summary
+        def print_summary(result):
             print("\n" + "="*80)
             print("VALIDATION SUMMARY")
             print("="*80)
             
-            print(f'\nChecks Passed: {result['checks_passed']}/{result['checks_total']}')
-            print(f'Deploy Approved: {'YES' if result['deploy_approved'] else 'NO'}')
-            print(f'Decision: {result['decision_reason']}')
+            print('')
+            print('Checks Passed:', str(result['checks_passed']) + '/' + str(result['checks_total']))
+            print('Deploy Approved:', 'YES' if result['deploy_approved'] else 'NO')
+            print('Decision:', result['decision_reason'])
             
             if result['failed_checks']:
-                print(f'\nFailed Checks:')
+                print('')
+                print('Failed Checks:')
                 for check in result['failed_checks']:
-                    print(f'  - {check}')
+                    print('  -', check)
             
-            print(f'\nRecommendation:')
-            print(f'  {result['recommendation']}')
+            print('')
+            print('Recommendation:')
+            print(' ', result['recommendation'])
             
             print("="*80)
         
@@ -410,13 +379,11 @@ implementation:
                 description='Validation Gate for Clustering Models'
             )
             
-            # Input arguments
             parser.add_argument('--evaluation_results', required=True,
                                help='Path to evaluation results JSON')
             parser.add_argument('--thresholds', default='{}',
                                help='Thresholds as JSON string')
             
-            # Output arguments
             parser.add_argument('--output_validation_result', required=True,
                                help='Output path for validation result JSON')
             parser.add_argument('--output_deploy_approved', required=True,
@@ -429,39 +396,33 @@ implementation:
                 print("VALIDATION GATE FOR CLUSTERING")
                 print("="*80)
                 
-                # Load evaluation results
                 evaluation_results = load_evaluation_results(args.evaluation_results)
                 
-                # Parse thresholds from JSON
                 thresholds = parse_thresholds(args.thresholds)
                 
-                # Run validation gate
                 gate = ValidationGate(thresholds)
                 result = gate.run_checks(evaluation_results)
                 
-                # Save result
                 save_validation_result(
                     result,
                     args.output_validation_result,
                     args.output_deploy_approved
                 )
                 
-                # Print summary
                 print_summary(result)
                 
-                # Final message
                 if result['deploy_approved']:
                     print("\nVALIDATION PASSED - Model approved for deployment")
                 else:
                     print("\nVALIDATION FAILED - Model rejected")
                 
-                print("="*80 + "\n")
+                print("="*80)
                 
             except Exception as e:
-                print(f'\nERROR: {str(e)}')
+                print('')
+                print('ERROR:', str(e))
                 import traceback
                 traceback.print_exc()
-                # Don't exit with error code - just mark as not approved
                 result = {
                     'deploy_approved': False,
                     'error': str(e)
