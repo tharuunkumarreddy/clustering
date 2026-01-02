@@ -363,9 +363,7 @@ implementation:
         def load_algorithm_class(algorithm_name):
             if algorithm_name not in ALGORITHM_REGISTRY:
                 available = ', '.join(ALGORITHM_REGISTRY.keys())
-                msg = 'Unknown algorithm - ' + str(algorithm_name) + '\n'
-                msg += 'Available algorithms - ' + str(available)
-                raise ValueError(msg)
+                raise ValueError('Unknown algorithm - ' + str(algorithm_name) + '. Available - ' + str(available))
             
             config = ALGORITHM_REGISTRY[algorithm_name]
             module_name = config['module']
@@ -386,16 +384,15 @@ implementation:
                         'skfuzzy': 'scikit-fuzzy'
                     }
                     package_name = package_map.get(module_name.split('.')[0], module_name.split('.')[0])
-                    msg = '\n' + str(algorithm_name) + ' requires additional package - ' + str(package_name) + '\n'
-                    msg += 'Install with - pip install ' + str(package_name)
-                    raise ImportError(msg) from e
+                    error_msg = str(algorithm_name) + ' requires package ' + str(package_name) + '. Install with pip install ' + str(package_name)
+                    raise ImportError(error_msg) from e
                 raise
         
         
         def auto_tune_parameters(algorithm_name, default_params, n_samples, n_features):
             params = default_params.copy()
             
-            print('\nAuto-tuning parameters for ' + str(algorithm_name) + '...')
+            print('\nAuto-tuning parameters for ' + str(algorithm_name))
             print('Data shape - ' + str(n_samples) + ' samples x ' + str(n_features) + ' features')
             
             if algorithm_name in ['KMeans', 'MiniBatchKMeans', 'BisectingKMeans', 'KMedoids']:
@@ -427,7 +424,7 @@ implementation:
             elif algorithm_name == 'FuzzyCMeans':
                 suggested_c = max(2, min(int(np.sqrt(n_samples / 2)), 20))
                 params['c'] = suggested_c
-                print('Auto-tuned c (clusters) - ' + str(suggested_c))
+                print('Auto-tuned c clusters - ' + str(suggested_c))
             
             elif algorithm_name == 'SpectralClustering':
                 suggested_k = max(2, min(int(np.sqrt(n_samples / 2)), 30))
@@ -446,7 +443,7 @@ implementation:
         
         
         def train_model(X_train, algorithm_name, parameters, training_mode='auto'):
-            print('\nTraining ' + str(algorithm_name) + '...')
+            print('\nTraining ' + str(algorithm_name))
             print('Data shape - ' + str(X_train.shape))
             print('Training mode - ' + str(training_mode))
             
@@ -457,7 +454,7 @@ implementation:
                 print('Auto-selected mode - ' + str(training_mode))
             
             if training_mode == 'fit':
-                print('Training with fit()...')
+                print('Training with fit()')
                 model = AlgorithmClass(**parameters)
                 model.fit(X_train)
                 
@@ -467,12 +464,12 @@ implementation:
                     train_labels = model.predict(X_train)
             
             elif training_mode == 'fit_predict':
-                print('Training with fit_predict()...')
+                print('Training with fit_predict()')
                 model = AlgorithmClass(**parameters)
                 train_labels = model.fit_predict(X_train)
             
             elif training_mode == 'function_call':
-                print('Training with functional API...')
+                print('Training with functional API')
                 if algorithm_name == 'FuzzyCMeans':
                     import skfuzzy as fuzz
                     cntr, u, u0, d, jm, p, fpc = fuzz.cluster.cmeans(
@@ -513,7 +510,7 @@ implementation:
         
         def save_outputs(model, train_labels, X_train, config, parameters, algorithm_name, 
                         model_path, labels_path, train_data_path, metadata_path):
-            print('\nSaving outputs...')
+            print('\nSaving outputs')
             
             for path in [model_path, labels_path, train_data_path, metadata_path]:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -575,7 +572,7 @@ implementation:
             parser.add_argument('--params', default='{}',
                                help='Algorithm parameters as JSON')
             parser.add_argument('--auto_tune', default='false',
-                               help='Auto-tune parameters (true/false)')
+                               help='Auto-tune parameters')
             parser.add_argument('--training_mode', default='auto',
                                help='Training mode')
             
@@ -595,7 +592,7 @@ implementation:
                 print("UNIVERSAL CLUSTERING MODEL TRAINING")
                 print("="*80)
                 
-                print('\nLoading training data from - ' + str(args.train_data))
+                print('\nLoading training data from ' + str(args.train_data))
                 
                 if args.train_data.endswith('.csv'):
                     df = pd.read_csv(args.train_data)
@@ -616,13 +613,11 @@ implementation:
                 
                 if not np.isfinite(X_train).all():
                     n_invalid = (~np.isfinite(X_train)).sum()
-                    raise ValueError('Data contains ' + str(n_invalid) + ' NaN/Inf values')
+                    raise ValueError('Data contains ' + str(n_invalid) + ' NaN or Inf values')
                 
                 if args.algorithm not in ALGORITHM_REGISTRY:
                     available = ', '.join(ALGORITHM_REGISTRY.keys())
-                    msg = 'Unknown algorithm - ' + str(args.algorithm) + '\n'
-                    msg += 'Available - ' + str(available)
-                    raise ValueError(msg)
+                    raise ValueError('Unknown algorithm - ' + str(args.algorithm) + '. Available - ' + str(available))
                 
                 config = ALGORITHM_REGISTRY[args.algorithm]
                 
@@ -632,7 +627,7 @@ implementation:
                 
                 parameters = config['default_params'].copy()
                 
-                print('\nConfiguring parameters...')
+                print('\nConfiguring parameters')
                 print('Starting with defaults for ' + str(args.algorithm))
                 
                 if args.auto_tune.lower() == 'true':
@@ -651,15 +646,15 @@ implementation:
                             if key in parameters:
                                 old_value = parameters[key]
                                 parameters[key] = value
-                                print('  ' + str(key) + ' - ' + str(old_value) + ' -> ' + str(value))
+                                print('  ' + str(key) + ' changed from ' + str(old_value) + ' to ' + str(value))
                             else:
-                                print('  Unknown parameter - ' + str(key) + ' (ignored)')
+                                print('  Unknown parameter ' + str(key) + ' ignored')
                     except json.JSONDecodeError as e:
                         raise ValueError('Invalid JSON in params - ' + str(e))
                 
                 print('\nFinal parameters')
                 for key, value in parameters.items():
-                    print('  ' + str(key) + ' - ' + str(value))
+                    print('  ' + str(key) + ' = ' + str(value))
                 
                 model, train_labels, config = train_model(
                     X_train=X_train,
@@ -702,7 +697,7 @@ implementation:
                 print('  Train data ref - ' + str(args.output_train_data_ref))
                 print('  Metadata - ' + str(args.output_metadata))
                 
-                print("="*80 + "\n")
+                print("="*80)
                 
             except Exception as e:
                 print('\nERROR - ' + str(e))
