@@ -365,7 +365,9 @@ implementation:
             # Returns: tuple (AlgorithmClass, config_dict)
             if algorithm_name not in ALGORITHM_REGISTRY:
                 available = ', '.join(ALGORITHM_REGISTRY.keys())
-                raise ValueError('Unknown algorithm: {}\nAvailable algorithms: {}'.format(algorithm_name, available))
+                msg = 'Unknown algorithm: ' + str(algorithm_name) + '\n'
+                msg += 'Available algorithms: ' + str(available)
+                raise ValueError(msg)
             
             config = ALGORITHM_REGISTRY[algorithm_name]
             module_name = config['module']
@@ -388,9 +390,9 @@ implementation:
                         'skfuzzy': 'scikit-fuzzy'
                     }
                     package_name = package_map.get(module_name.split('.')[0], module_name.split('.')[0])
-                    raise ImportError(
-                        '\n{} requires additional package: {}\nInstall with: pip install {}'.format(package_name, package_name)
-                    ) from e
+                    msg = '\n' + algorithm_name + ' requires additional package: ' + package_name + '\n'
+                    msg += 'Install with: pip install ' + package_name
+                    raise ImportError(msg) from e
                 raise
         
         
@@ -651,9 +653,9 @@ implementation:
                 # Get algorithm configuration
                 if args.algorithm not in ALGORITHM_REGISTRY:
                     available = ', '.join(ALGORITHM_REGISTRY.keys())
-                    raise ValueError(
-                        'Unknown algorithm: {}\nAvailable: {}'.format(args.algorithm, available)
-                    )
+                    msg = 'Unknown algorithm: ' + str(args.algorithm) + '\n'
+                    msg += 'Available: ' + str(available)
+                    raise ValueError(msg)
                 
                 config = ALGORITHM_REGISTRY[args.algorithm]
                 
@@ -729,7 +731,9 @@ implementation:
                 print(f'  Clusters found: {metadata['training_results']['n_clusters']}')
                 
                 if metadata['training_results']['n_noise'] > 0:
-                    print'  Noise points: {} ({}%)'.format(metadata['training_results']['n_noise'], metadata['training_results']['noise_percentage']:.1f)
+                    n_noise = metadata['training_results']['n_noise']
+                    noise_pct = metadata['training_results']['noise_percentage']
+                    print(f'  Noise points: {n_noise} ({noise_pct:.1f}%)')
                 
                 print(f'\nOutput files created:')
                 print(f'  Model: {args.output_model}')
