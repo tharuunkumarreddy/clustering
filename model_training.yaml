@@ -363,7 +363,7 @@ implementation:
         def load_algorithm_class(algorithm_name):
             if algorithm_name not in ALGORITHM_REGISTRY:
                 available = ', '.join(ALGORITHM_REGISTRY.keys())
-                raise ValueError('Unknown algorithm - ' + str(algorithm_name) + '. Available - ' + str(available))
+                raise ValueError('Unknown algorithm: ' + str(algorithm_name) + '. Available: ' + str(available))
             
             config = ALGORITHM_REGISTRY[algorithm_name]
             module_name = config['module']
@@ -392,26 +392,27 @@ implementation:
         def auto_tune_parameters(algorithm_name, default_params, n_samples, n_features):
             params = default_params.copy()
             
-            print('\nAuto-tuning parameters for ' + str(algorithm_name))
-            print('Data shape - ' + str(n_samples) + ' samples x ' + str(n_features) + ' features')
+            print('')
+            print('Auto-tuning parameters for', algorithm_name)
+            print('Data shape:', n_samples, 'samples x', n_features, 'features')
             
             if algorithm_name in ['KMeans', 'MiniBatchKMeans', 'BisectingKMeans', 'KMedoids']:
                 suggested_k = max(2, min(int(np.sqrt(n_samples / 2)), 50))
                 params['n_clusters'] = suggested_k
-                print('Auto-tuned n_clusters - ' + str(suggested_k))
+                print('Auto-tuned n_clusters:', suggested_k)
                 
             elif algorithm_name == 'DBSCAN':
                 suggested_eps = max(0.3, min(2.0, n_features * 0.1))
                 suggested_min_samples = max(3, min(2 * n_features, 50))
                 params['eps'] = suggested_eps
                 params['min_samples'] = suggested_min_samples
-                print('Auto-tuned eps - ' + str(round(suggested_eps, 3)))
-                print('Auto-tuned min_samples - ' + str(suggested_min_samples))
+                print('Auto-tuned eps:', round(suggested_eps, 3))
+                print('Auto-tuned min_samples:', suggested_min_samples)
                 
             elif algorithm_name == 'HDBSCAN':
                 suggested_size = max(5, int(n_samples * 0.01))
                 params['min_cluster_size'] = suggested_size
-                print('Auto-tuned min_cluster_size - ' + str(suggested_size))
+                print('Auto-tuned min_cluster_size:', suggested_size)
                 
             elif algorithm_name in ['GaussianMixture', 'BayesianGaussianMixture']:
                 if n_features > 20:
@@ -419,39 +420,40 @@ implementation:
                 else:
                     suggested_comp = max(2, min(10, int(np.sqrt(n_samples / 10))))
                 params['n_components'] = suggested_comp
-                print('Auto-tuned n_components - ' + str(suggested_comp))
+                print('Auto-tuned n_components:', suggested_comp)
             
             elif algorithm_name == 'FuzzyCMeans':
                 suggested_c = max(2, min(int(np.sqrt(n_samples / 2)), 20))
                 params['c'] = suggested_c
-                print('Auto-tuned c clusters - ' + str(suggested_c))
+                print('Auto-tuned c clusters:', suggested_c)
             
             elif algorithm_name == 'SpectralClustering':
                 suggested_k = max(2, min(int(np.sqrt(n_samples / 2)), 30))
                 suggested_neighbors = max(5, min(int(np.log(n_samples)), 20))
                 params['n_clusters'] = suggested_k
                 params['n_neighbors'] = suggested_neighbors
-                print('Auto-tuned n_clusters - ' + str(suggested_k))
-                print('Auto-tuned n_neighbors - ' + str(suggested_neighbors))
+                print('Auto-tuned n_clusters:', suggested_k)
+                print('Auto-tuned n_neighbors:', suggested_neighbors)
             
             elif algorithm_name == 'AgglomerativeClustering':
                 suggested_k = max(2, min(int(np.sqrt(n_samples / 2)), 30))
                 params['n_clusters'] = suggested_k
-                print('Auto-tuned n_clusters - ' + str(suggested_k))
+                print('Auto-tuned n_clusters:', suggested_k)
             
             return params
         
         
         def train_model(X_train, algorithm_name, parameters, training_mode='auto'):
-            print('\nTraining ' + str(algorithm_name))
-            print('Data shape - ' + str(X_train.shape))
-            print('Training mode - ' + str(training_mode))
+            print('')
+            print('Training', algorithm_name)
+            print('Data shape:', X_train.shape)
+            print('Training mode:', training_mode)
             
             AlgorithmClass, config = load_algorithm_class(algorithm_name)
             
             if training_mode == 'auto':
                 training_mode = config['preferred_training']
-                print('Auto-selected mode - ' + str(training_mode))
+                print('Auto-selected mode:', training_mode)
             
             if training_mode == 'fit':
                 print('Training with fit()')
@@ -485,32 +487,35 @@ implementation:
                 else:
                     raise ValueError('function_call not supported for ' + str(algorithm_name))
             else:
-                raise ValueError('Unknown training_mode - ' + str(training_mode))
+                raise ValueError('Unknown training_mode: ' + str(training_mode))
             
             unique_labels = np.unique(train_labels)
             n_clusters = len(unique_labels[unique_labels != -1])
             n_noise = np.sum(train_labels == -1)
             
-            print('\nTraining Results')
-            print('Clusters found - ' + str(n_clusters))
+            print('')
+            print('Training Results')
+            print('Clusters found:', n_clusters)
             
             if n_noise > 0:
                 noise_pct = n_noise / len(train_labels) * 100
-                print('Noise points - ' + str(n_noise) + ' (' + str(round(noise_pct, 1)) + '%)')
+                print('Noise points:', n_noise, '(' + str(round(noise_pct, 1)) + '%)')
             
-            print('\nCluster distribution')
+            print('')
+            print('Cluster distribution')
             for label in sorted(unique_labels):
                 count = np.sum(train_labels == label)
                 pct = count / len(train_labels) * 100
                 label_name = "Noise" if label == -1 else 'Cluster ' + str(label)
-                print('  ' + str(label_name) + ' - ' + str(count) + ' samples (' + str(round(pct, 1)) + '%)')
+                print(' ', label_name + ':', count, 'samples (' + str(round(pct, 1)) + '%)')
             
             return model, train_labels, config
         
         
         def save_outputs(model, train_labels, X_train, config, parameters, algorithm_name, 
                         model_path, labels_path, train_data_path, metadata_path):
-            print('\nSaving outputs')
+            print('')
+            print('Saving outputs')
             
             for path in [model_path, labels_path, train_data_path, metadata_path]:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -518,13 +523,13 @@ implementation:
             with open(model_path, 'wb') as f:
                 pickle.dump(model, f)
             model_size = os.path.getsize(model_path) / 1024
-            print('Model saved - ' + str(model_path) + ' (' + str(round(model_size, 2)) + ' KB)')
+            print('Model saved:', model_path, '(' + str(round(model_size, 2)) + ' KB)')
             
             np.save(labels_path, train_labels)
-            print('Labels saved - ' + str(labels_path))
+            print('Labels saved:', labels_path)
             
             np.save(train_data_path, X_train)
-            print('Train data saved - ' + str(train_data_path))
+            print('Train data saved:', train_data_path)
             
             unique_labels = np.unique(train_labels)
             n_clusters = len(unique_labels[unique_labels != -1])
@@ -555,7 +560,7 @@ implementation:
             
             with open(metadata_path, 'w') as f:
                 json.dump(metadata, f, indent=2)
-            print('Metadata saved - ' + str(metadata_path))
+            print('Metadata saved:', metadata_path)
             
             return metadata
         
@@ -592,7 +597,8 @@ implementation:
                 print("UNIVERSAL CLUSTERING MODEL TRAINING")
                 print("="*80)
                 
-                print('\nLoading training data from ' + str(args.train_data))
+                print('')
+                print('Loading training data from', args.train_data)
                 
                 if args.train_data.endswith('.csv'):
                     df = pd.read_csv(args.train_data)
@@ -603,7 +609,7 @@ implementation:
                     raise ValueError("Unsupported file format. Use .csv or .npy")
                 
                 print('Loaded successfully')
-                print('Shape - ' + str(X_train.shape[0]) + ' samples x ' + str(X_train.shape[1]) + ' features')
+                print('Shape:', X_train.shape[0], 'samples x', X_train.shape[1], 'features')
                 
                 if X_train.shape[0] < 2:
                     raise ValueError('Need at least 2 samples, got ' + str(X_train.shape[0]))
@@ -617,18 +623,20 @@ implementation:
                 
                 if args.algorithm not in ALGORITHM_REGISTRY:
                     available = ', '.join(ALGORITHM_REGISTRY.keys())
-                    raise ValueError('Unknown algorithm - ' + str(args.algorithm) + '. Available - ' + str(available))
+                    raise ValueError('Unknown algorithm: ' + str(args.algorithm) + '. Available: ' + str(available))
                 
                 config = ALGORITHM_REGISTRY[args.algorithm]
                 
-                print('\nAlgorithm - ' + str(args.algorithm))
-                print('Category - ' + str(config['category']))
-                print('Training method - ' + str(config['preferred_training']))
+                print('')
+                print('Algorithm:', args.algorithm)
+                print('Category:', config['category'])
+                print('Training method:', config['preferred_training'])
                 
                 parameters = config['default_params'].copy()
                 
-                print('\nConfiguring parameters')
-                print('Starting with defaults for ' + str(args.algorithm))
+                print('')
+                print('Configuring parameters')
+                print('Starting with defaults for', args.algorithm)
                 
                 if args.auto_tune.lower() == 'true':
                     parameters = auto_tune_parameters(
@@ -641,20 +649,22 @@ implementation:
                 if args.params and args.params != '{}':
                     try:
                         user_params = json.loads(args.params)
-                        print('\nApplying ' + str(len(user_params)) + ' user parameters')
+                        print('')
+                        print('Applying', len(user_params), 'user parameters')
                         for key, value in user_params.items():
                             if key in parameters:
                                 old_value = parameters[key]
                                 parameters[key] = value
-                                print('  ' + str(key) + ' changed from ' + str(old_value) + ' to ' + str(value))
+                                print(' ', key, 'changed from', old_value, 'to', value)
                             else:
-                                print('  Unknown parameter ' + str(key) + ' ignored')
+                                print('  Unknown parameter', key, 'ignored')
                     except json.JSONDecodeError as e:
-                        raise ValueError('Invalid JSON in params - ' + str(e))
+                        raise ValueError('Invalid JSON in params: ' + str(e))
                 
-                print('\nFinal parameters')
+                print('')
+                print('Final parameters')
                 for key, value in parameters.items():
-                    print('  ' + str(key) + ' = ' + str(value))
+                    print(' ', key, '=', value)
                 
                 model, train_labels, config = train_model(
                     X_train=X_train,
@@ -676,31 +686,35 @@ implementation:
                     metadata_path=args.output_metadata
                 )
                 
-                print('\n' + "="*80)
+                print('')
+                print("="*80)
                 print("TRAINING COMPLETED SUCCESSFULLY")
                 print("="*80)
-                print('\nSummary')
-                print('  Algorithm - ' + str(args.algorithm))
-                print('  Category - ' + str(config['category']))
-                print('  Training samples - ' + str(X_train.shape[0]))
-                print('  Features - ' + str(X_train.shape[1]))
-                print('  Clusters found - ' + str(metadata['training_results']['n_clusters']))
+                print('')
+                print('Summary')
+                print('  Algorithm:', args.algorithm)
+                print('  Category:', config['category'])
+                print('  Training samples:', X_train.shape[0])
+                print('  Features:', X_train.shape[1])
+                print('  Clusters found:', metadata['training_results']['n_clusters'])
                 
                 if metadata['training_results']['n_noise'] > 0:
                     n_noise = metadata['training_results']['n_noise']
                     noise_pct = metadata['training_results']['noise_percentage']
-                    print('  Noise points - ' + str(n_noise) + ' (' + str(round(noise_pct, 1)) + '%)')
+                    print('  Noise points:', n_noise, '(' + str(round(noise_pct, 1)) + '%)')
                 
-                print('\nOutput files created')
-                print('  Model - ' + str(args.output_model))
-                print('  Labels - ' + str(args.output_train_labels))
-                print('  Train data ref - ' + str(args.output_train_data_ref))
-                print('  Metadata - ' + str(args.output_metadata))
+                print('')
+                print('Output files created')
+                print('  Model:', args.output_model)
+                print('  Labels:', args.output_train_labels)
+                print('  Train data ref:', args.output_train_data_ref)
+                print('  Metadata:', args.output_metadata)
                 
                 print("="*80)
                 
             except Exception as e:
-                print('\nERROR - ' + str(e))
+                print('')
+                print('ERROR:', str(e))
                 import traceback
                 traceback.print_exc()
                 sys.exit(1)
