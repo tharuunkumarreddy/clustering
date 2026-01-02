@@ -361,7 +361,7 @@ implementation:
         
         
         def load_algorithm_class(algorithm_name):
-            """Dynamically load algorithm class. Returns: tuple (AlgorithmClass, config_dict)"""
+            #Dynamically load algorithm class and config#
             if algorithm_name not in ALGORITHM_REGISTRY:
                 available = ', '.join(ALGORITHM_REGISTRY.keys())
                 raise ValueError(
@@ -396,7 +396,7 @@ implementation:
         
         
         def auto_tune_parameters(algorithm_name, default_params, n_samples, n_features):
-            """Auto-tune parameters based on data characteristics. Returns: dict with tuned parameters"""
+            #Auto-tune parameters based on data characteristics#
             params = default_params.copy()
             
             print(f'\nAuto-tuning parameters for {algorithm_name}...')
@@ -450,7 +450,7 @@ implementation:
         
         
         def train_model(X_train, algorithm_name, parameters, training_mode='auto'):
-            """Train clustering model. Returns: tuple (model, train_labels, config)"""
+            #Train clustering model and return results#
             print(f'\nTraining {algorithm_name}...')
             print(f'Data shape: {X_train.shape}')
             print(f'Training mode: {training_mode}')
@@ -517,7 +517,7 @@ implementation:
         
         def save_outputs(model, train_labels, X_train, config, parameters, algorithm_name, 
                         model_path, labels_path, train_data_path, metadata_path):
-            """Save model and training results"""
+            #Save model and training results#
             print(f'\nSaving outputs...')
             
             for path in [model_path, labels_path, train_data_path, metadata_path]:
