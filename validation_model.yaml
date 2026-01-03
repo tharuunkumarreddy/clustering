@@ -35,7 +35,6 @@ implementation:
         import json
         import os
         from datetime import datetime
-        from typing import Dict, List, Tuple, Any
         
         
         class ValidationGate:
@@ -46,7 +45,8 @@ implementation:
                 self.failed_checks = []
             
             def run_checks(self, evaluation_metrics):
-                print("\n" + "="*80)
+                print('')
+                print("="*80)
                 print("VALIDATION GATE - MODEL QUALITY CHECK")
                 print("="*80)
                 
@@ -61,7 +61,8 @@ implementation:
                 
                 all_passed = len(self.failed_checks) == 0
                 
-                print("\n" + "="*80)
+                print('')
+                print("="*80)
                 if all_passed:
                     print("VALIDATION GATE: APPROVED FOR DEPLOYMENT")
                     decision_reason = "All quality checks passed"
@@ -352,7 +353,8 @@ implementation:
         
         
         def print_summary(result):
-            print("\n" + "="*80)
+            print('')
+            print("="*80)
             print("VALIDATION SUMMARY")
             print("="*80)
             
@@ -412,9 +414,11 @@ implementation:
                 print_summary(result)
                 
                 if result['deploy_approved']:
-                    print("\nVALIDATION PASSED - Model approved for deployment")
+                    print('')
+                    print("VALIDATION PASSED - Model approved for deployment")
                 else:
-                    print("\nVALIDATION FAILED - Model rejected")
+                    print('')
+                    print("VALIDATION FAILED - Model rejected")
                 
                 print("="*80)
                 
