@@ -440,12 +440,14 @@ implementation:
         
         def generate_summary_report(evaluation_results):
             report = []
-            report.append("\n" + "="*80)
+            report.append('')
+            report.append("="*80)
             report.append("CLUSTERING EVALUATION SUMMARY")
             report.append("="*80)
             
             basic = evaluation_results['basic_statistics']
-            report.append('\nDataset Overview:')
+            report.append('')
+            report.append('Dataset Overview:')
             report.append('  Dataset: ' + str(evaluation_results.get('dataset', 'Unknown')))
             report.append('  Algorithm: ' + str(evaluation_results.get('algorithm', 'Unknown')))
             report.append('  Total samples: ' + str(basic['n_samples']))
@@ -456,7 +458,8 @@ implementation:
             
             if evaluation_results.get('internal_metrics') and not evaluation_results['internal_metrics'].get('reason'):
                 internal = evaluation_results['internal_metrics']
-                report.append('\nInternal Metrics (Clustering Quality):')
+                report.append('')
+                report.append('Internal Metrics (Clustering Quality):')
                 
                 if internal.get('silhouette_score') is not None:
                     sil = internal['silhouette_score']
@@ -480,7 +483,8 @@ implementation:
             
             if evaluation_results.get('external_metrics') and evaluation_results['external_metrics'].get('available'):
                 external = evaluation_results['external_metrics']
-                report.append('\nExternal Metrics (vs Ground Truth):')
+                report.append('')
+                report.append('External Metrics (vs Ground Truth):')
                 
                 if external.get('adjusted_rand_index') is not None:
                     ari = external['adjusted_rand_index']
@@ -496,7 +500,8 @@ implementation:
             
             if evaluation_results.get('cluster_quality') and not evaluation_results['cluster_quality'].get('error'):
                 quality = evaluation_results['cluster_quality']
-                report.append('\nCluster Quality:')
+                report.append('')
+                report.append('Cluster Quality:')
                 
                 if quality.get('separation_ratio'):
                     ratio = quality['separation_ratio']
@@ -510,7 +515,8 @@ implementation:
                         quality_label = "Poor"
                     report.append('  Separation ratio: ' + str(round(ratio, 4)) + ' (' + quality_label + ')')
             
-            report.append("\n" + "="*80)
+            report.append('')
+            report.append("="*80)
             
             return '\n'.join(report)
         
