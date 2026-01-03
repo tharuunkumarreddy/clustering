@@ -518,8 +518,9 @@ implementation:
             report.append('')
             report.append("="*80)
             
-            newline = '\n'
-            return newline.join(report)
+            sep = chr(10)
+            result = sep.join(report)
+            return result
         
         
         def main():
