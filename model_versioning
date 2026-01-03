@@ -91,7 +91,8 @@ implementation:
             def check_validation_approval(self, validation_results):
                 approved = validation_results.get('deploy_approved', False)
                 
-                print("\n" + "="*80)
+                print('')
+                print("="*80)
                 print("VALIDATION STATUS CHECK")
                 print("="*80)
                 
@@ -198,7 +199,8 @@ implementation:
                 output_model_path,
                 output_metadata_path
             ):
-                print("\n" + "="*80)
+                print('')
+                print("="*80)
                 print("MODEL VERSIONING")
                 print("="*80)
                 
@@ -299,7 +301,8 @@ implementation:
                 }
             
             def _print_version_summary(self, metadata):
-                print("\n" + "="*80)
+                print('')
+                print("="*80)
                 print('MODEL VERSION:', metadata['version'])
                 print("="*80)
                 
@@ -392,7 +395,8 @@ implementation:
                 print("="*80)
                 print("MODEL VERSIONING FOR CLUSTERING")
                 print("="*80)
-                print("\nIMPORTANT: This component requires validation results!")
+                print('')
+                print("IMPORTANT: This component requires validation results!")
                 print("Only models approved by validation gate will be versioned.")
                 print("="*80)
                 
@@ -403,11 +407,14 @@ implementation:
                 versioning = ModelVersioning(registry_path=args.registry_path)
                 
                 if not versioning.check_validation_approval(validation_results):
-                    print("\n" + "="*80)
+                    print('')
+                    print("="*80)
                     print("MODEL VERSIONING ABORTED")
                     print("="*80)
-                    print("\nReason: Model was REJECTED by validation gate")
-                    print("\nRecommendations:")
+                    print('')
+                    print("Reason: Model was REJECTED by validation gate")
+                    print('')
+                    print("Recommendations:")
                     print("  1. Review failed validation checks")
                     print("  2. Retrain model with different parameters")
                     print("  3. Try different algorithm")
@@ -468,7 +475,8 @@ implementation:
                 
                 registry_info = versioning.get_registry_info()
                 
-                print("\n" + "="*80)
+                print('')
+                print("="*80)
                 print("VERSIONING SUMMARY")
                 print("="*80)
                 
@@ -492,6 +500,7 @@ implementation:
                 print('  2. Ready for deployment to production')
                 print('  3. Set up monitoring and alerting')
                 
+                print('')
                 print("="*80)
                 print("MODEL VERSIONING COMPLETED SUCCESSFULLY")
                 
