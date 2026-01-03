@@ -600,13 +600,28 @@ implementation:
                 print('')
                 print('Loading training data from', args.train_data)
                 
-                if args.train_data.endswith('.csv'):
+                # Try to detect format by attempting to load
+                X_train = None
+                load_method = None
+                
+                try:
+                    # First try CSV
                     df = pd.read_csv(args.train_data)
                     X_train = df.values
-                elif args.train_data.endswith('.npy'):
-                    X_train = np.load(args.train_data)
-                else:
-                    raise ValueError("Unsupported file format. Use .csv or .npy")
+                    load_method = 'CSV'
+                    print('Loaded as CSV successfully')
+                except Exception as csv_error:
+                    # Try NPY
+                    try:
+                        X_train = np.load(args.train_data)
+                        load_method = 'NPY'
+                        print('Loaded as NPY successfully')
+                    except Exception as npy_error:
+                        # Neither worked - provide detailed error
+                        print('Failed to load file')
+                        print('Attempted CSV - Error:', str(csv_error))
+                        print('Attempted NPY - Error:', str(npy_error))
+                        raise ValueError("Could not load file as CSV or NPY. Ensure file is in correct format.")
                 
                 print('Loaded successfully')
                 print('Shape:', X_train.shape[0], 'samples x', X_train.shape[1], 'features')
