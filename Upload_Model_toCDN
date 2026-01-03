@@ -1,0 +1,286 @@
+name: Upload Training Model to CDN
+description: Uploads trained model (.pkl) and metadata (.json) from training component to CDN for production use
+
+inputs:
+  - name: model
+    type: Model
+    description: "Trained clustering model (PKL format from training component)"
+  - name: metadata
+    type: Data
+    description: "Training metadata (JSON format from training component)"
+  - name: bearer_token
+    type: String
+    description: "Bearer token for CDN authentication"
+  - name: domain
+    type: String
+    description: "Upload service base domain"
+  - name: get_cdn
+    type: String
+    description: "Public CDN base domain"
+
+outputs:
+  - name: model_cdn_url
+    type: String
+    description: "CDN URL for trained model"
+  - name: metadata_cdn_url
+    type: String
+    description: "CDN URL for metadata"
+  - name: upload_summary
+    type: String
+    description: "JSON summary of uploaded files"
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - sh
+      - -ec
+      - |
+        if ! command -v curl >/dev/null 2>&1; then
+          apt-get update >/dev/null && apt-get install -y curl >/dev/null
+        fi
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import subprocess
+        import json
+        import os
+        import time
+        import tempfile
+        import shutil
+
+        parser = argparse.ArgumentParser(
+            description="Upload Training Model to CDN"
+        )
+        
+        parser.add_argument('--model', required=True,
+                           help="Path to trained model PKL")
+        parser.add_argument('--metadata', required=True,
+                           help="Path to training metadata JSON")
+        
+        parser.add_argument('--bearer_token', required=True,
+                           help="Bearer token string")
+        parser.add_argument('--domain', required=True,
+                           help="Upload service domain")
+        parser.add_argument('--get_cdn', required=True,
+                           help="CDN base URL")
+        
+        parser.add_argument('--output_model_cdn_url', required=True,
+                           help="Output path for model CDN URL")
+        parser.add_argument('--output_metadata_cdn_url', required=True,
+                           help="Output path for metadata CDN URL")
+        parser.add_argument('--output_upload_summary', required=True,
+                           help="Output path for upload summary JSON")
+        
+        args = parser.parse_args()
+        
+        print("="*80)
+        print("CDN UPLOAD COMPONENT - TRAINING MODEL")
+        print("="*80)
+        print("Domain:", args.domain)
+        print("CDN Base:", args.get_cdn)
+        print("")
+        
+        bearer_token = args.bearer_token
+        print("Bearer token loaded")
+        print("")
+        
+        upload_url = (
+            args.domain +
+            "/mobius-content-service/v1.0/content/upload"
+            "?filePathAccess=private&filePath=%2Fbottle%2Flimka%2Fsoda%2F"
+        )
+        
+        def encode_special_chars(text):
+            text = text.replace("$", "%24")
+            text = text.replace("(", "%28")
+            text = text.replace(")", "%29")
+            text = text.replace("[", "%5B")
+            text = text.replace("]", "%5D")
+            text = text.replace("{", "%7B")
+            text = text.replace("}", "%7D")
+            text = text.replace(" ", "%20")
+            return text
+        
+        def get_file_extension(file_path):
+            _, ext = os.path.splitext(file_path)
+            return ext
+        
+        def ensure_proper_filename(file_path, expected_ext):
+            original_name = os.path.basename(file_path)
+            print('  Original filename:', original_name)
+            
+            current_ext = get_file_extension(original_name)
+            print('  Current extension:', current_ext if current_ext else '(none)')
+            
+            if not current_ext or current_ext != expected_ext:
+                print('  WARNING: File missing proper extension!')
+                print('  Expected:', expected_ext)
+                
+                temp_dir = tempfile.gettempdir()
+                base_name = os.path.splitext(original_name)[0]
+                if not base_name:
+                    base_name = 'file'
+                
+                new_name = base_name + expected_ext
+                new_path = os.path.join(temp_dir, new_name)
+                
+                print('  Creating copy with proper extension:', new_name)
+                shutil.copy2(file_path, new_path)
+                return new_path, new_path
+            
+            return file_path, None
+        
+        def upload_file(file_path, file_description, expected_ext, output_path):
+            print('Uploading', file_description)
+            print('  Local path:', file_path)
+            
+            if not os.path.exists(file_path):
+                raise FileNotFoundError('File not found: ' + str(file_path))
+            
+            file_size = os.path.getsize(file_path)
+            print('  File size:', str(file_size) + ' bytes (' + str(round(file_size/1024, 2)) + ' KB)')
+            
+            if file_size == 0:
+                raise ValueError('File is empty (0 bytes): ' + str(file_path))
+            
+            proper_path, temp_file = ensure_proper_filename(file_path, expected_ext)
+            
+            try:
+                cmd = [
+                    "curl",
+                    "--location", upload_url,
+                    "--header", "Authorization: Bearer " + bearer_token,
+                    "--form", "file=@" + proper_path,
+                    "--fail",
+                    "--show-error",
+                    "--silent"
+                ]
+                
+                print('  Uploading to CDN...')
+                result = subprocess.run(cmd, capture_output=True, check=True)
+                
+                response = json.loads(result.stdout.decode())
+                
+                relative_url = response.get("cdnUrl")
+                if not relative_url:
+                    raise RuntimeError('cdnUrl missing in response: ' + str(response))
+                
+                print('  CDN relative URL:', relative_url)
+                
+                relative_url = encode_special_chars(relative_url)
+                full_url = args.get_cdn + relative_url
+                
+                print('  Upload successful')
+                print('  Full CDN URL:', full_url)
+                print("")
+                
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                with open(output_path, "w") as f:
+                    f.write(full_url)
+                
+                return {
+                    'url': full_url,
+                    'size_bytes': file_size,
+                    'size_kb': round(file_size / 1024, 2),
+                    'original_filename': os.path.basename(file_path),
+                    'uploaded_filename': os.path.basename(proper_path)
+                }
+            
+            except subprocess.CalledProcessError as e:
+                print('  Upload failed!')
+                print('  Error:', e.stderr.decode())
+                raise
+            
+            finally:
+                if temp_file and os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except Exception:
+                        pass
+        
+        upload_results = {}
+        
+        try:
+            model_result = upload_file(
+                args.model,
+                "Trained Model",
+                ".pkl",
+                args.output_model_cdn_url
+            )
+            upload_results['model'] = model_result
+            
+            metadata_result = upload_file(
+                args.metadata,
+                "Training Metadata",
+                ".json",
+                args.output_metadata_cdn_url
+            )
+            upload_results['metadata'] = metadata_result
+            
+            summary = {
+                'timestamp': int(time.time()),
+                'upload_status': 'success',
+                'files_uploaded': 2,
+                'total_size_bytes': model_result['size_bytes'] + metadata_result['size_bytes'],
+                'total_size_kb': round((model_result['size_bytes'] + metadata_result['size_bytes']) / 1024, 2),
+                'files': upload_results
+            }
+            
+            os.makedirs(os.path.dirname(args.output_upload_summary), exist_ok=True)
+            with open(args.output_upload_summary, "w") as f:
+                json.dump(summary, f, indent=2)
+            
+            print("="*80)
+            print("CDN UPLOAD COMPLETED SUCCESSFULLY")
+            print("="*80)
+            print("Files uploaded: 2")
+            print("Model:", model_result['url'])
+            print("  Size:", str(model_result['size_kb']), 'KB')
+            print("Metadata:", metadata_result['url'])
+            print("  Size:", str(metadata_result['size_kb']), 'KB')
+            print("Total size:", str(summary['total_size_kb']), 'KB')
+            print("="*80)
+            
+        except Exception as e:
+            print("")
+            print("="*80)
+            print("CDN UPLOAD FAILED")
+            print("="*80)
+            print("Error:", str(e))
+            print("="*80)
+            
+            error_summary = {
+                'timestamp': int(time.time()),
+                'upload_status': 'failed',
+                'error': str(e),
+                'files_uploaded': len(upload_results),
+                'files': upload_results
+            }
+            
+            os.makedirs(os.path.dirname(args.output_upload_summary), exist_ok=True)
+            with open(args.output_upload_summary, "w") as f:
+                json.dump(error_summary, f, indent=2)
+            
+            raise
+
+    args:
+      - --model
+      - {inputPath: model}
+      - --metadata
+      - {inputPath: metadata}
+      - --bearer_token
+      - {inputValue: bearer_token}
+      - --domain
+      - {inputValue: domain}
+      - --get_cdn
+      - {inputValue: get_cdn}
+      - --output_model_cdn_url
+      - {outputPath: model_cdn_url}
+      - --output_metadata_cdn_url
+      - {outputPath: metadata_cdn_url}
+      - --output_upload_summary
+      - {outputPath: upload_summary}
