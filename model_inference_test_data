@@ -49,6 +49,7 @@ implementation:
         import pickle
         import argparse
         import warnings
+        import shutil
         import numpy as np
         import pandas as pd
         from pathlib import Path
@@ -112,13 +113,21 @@ implementation:
             print('Loading test data from:', data_path)
             
             try:
-                if data_path.endswith('.csv'):
+                data = None
+                
+                try:
                     df = pd.read_csv(data_path)
                     data = df.values
-                elif data_path.endswith('.npy'):
-                    data = np.load(data_path)
-                else:
-                    raise ValueError("Unsupported format. Use .csv or .npy")
+                    print('Loaded as CSV successfully')
+                except Exception as csv_error:
+                    try:
+                        data = np.load(data_path, allow_pickle=False)
+                        print('Loaded as NPY successfully')
+                    except Exception as npy_error:
+                        print('Failed to load file')
+                        print('Attempted CSV - Error:', str(csv_error))
+                        print('Attempted NPY - Error:', str(npy_error))
+                        raise ValueError("Could not load file as CSV or NPY. Ensure file is in correct format.")
                 
                 print('Loaded successfully')
                 print('Shape:', data.shape[0], 'samples x', data.shape[1], 'features')
@@ -144,17 +153,21 @@ implementation:
                 if not train_labels_path or not os.path.exists(train_labels_path):
                     return None, None
                 
-                if train_data_path.endswith('.csv'):
+                X_train = None
+                try:
                     df = pd.read_csv(train_data_path)
                     X_train = df.values
-                elif train_data_path.endswith('.npy'):
-                    X_train = np.load(train_data_path)
-                else:
-                    raise ValueError("Unsupported format for training data")
+                    print('Training data loaded as CSV')
+                except:
+                    try:
+                        X_train = np.load(train_data_path, allow_pickle=False)
+                        print('Training data loaded as NPY')
+                    except Exception as e:
+                        raise ValueError("Could not load training data: " + str(e))
                 
                 print('Training data:', X_train.shape)
                 
-                train_labels = np.load(train_labels_path)
+                train_labels = np.load(train_labels_path, allow_pickle=False)
                 print('Training labels:', len(train_labels), 'samples')
                 
                 if len(X_train) != len(train_labels):
@@ -419,6 +432,9 @@ implementation:
             os.makedirs(os.path.dirname(meta_path), exist_ok=True)
             
             np.save(pred_path, predictions)
+            npy_path = pred_path + '.npy'
+            if os.path.exists(npy_path):
+                shutil.move(npy_path, pred_path)
             print('Predictions saved:', pred_path)
             
             pred_metadata = {
