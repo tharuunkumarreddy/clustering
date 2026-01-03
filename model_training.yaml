@@ -514,6 +514,8 @@ implementation:
         
         def save_outputs(model, train_labels, X_train, config, parameters, algorithm_name, 
                         model_path, labels_path, train_data_path, metadata_path):
+            import shutil  # Add this import here
+            
             print('')
             print('Saving outputs')
             
@@ -525,10 +527,18 @@ implementation:
             model_size = os.path.getsize(model_path) / 1024
             print('Model saved:', model_path, '(' + str(round(model_size, 2)) + ' KB)')
             
+            # Save labels - np.save adds .npy, so rename it
             np.save(labels_path, train_labels)
+            npy_path = labels_path + '.npy'
+            if os.path.exists(npy_path):
+                shutil.move(npy_path, labels_path)
             print('Labels saved:', labels_path)
             
+            # Save train data - np.save adds .npy, so rename it  
             np.save(train_data_path, X_train)
+            npy_path = train_data_path + '.npy'
+            if os.path.exists(npy_path):
+                shutil.move(npy_path, train_data_path)
             print('Train data saved:', train_data_path)
             
             unique_labels = np.unique(train_labels)
