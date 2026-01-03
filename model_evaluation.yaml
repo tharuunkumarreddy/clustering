@@ -79,13 +79,21 @@ implementation:
             print('Loading data from:', data_path)
             
             try:
-                if data_path.endswith('.csv'):
+                data = None
+                
+                try:
                     df = pd.read_csv(data_path)
                     data = df.values
-                elif data_path.endswith('.npy'):
-                    data = np.load(data_path)
-                else:
-                    raise ValueError("Unsupported format. Use .csv or .npy")
+                    print('Loaded as CSV successfully')
+                except Exception as csv_error:
+                    try:
+                        data = np.load(data_path, allow_pickle=False)
+                        print('Loaded as NPY successfully')
+                    except Exception as npy_error:
+                        print('Failed to load file')
+                        print('Attempted CSV - Error:', str(csv_error))
+                        print('Attempted NPY - Error:', str(npy_error))
+                        raise ValueError("Could not load file as CSV or NPY. Ensure file is in correct format.")
                 
                 print('Loaded successfully')
                 print('Shape:', data.shape[0], 'samples x', data.shape[1], 'features')
@@ -102,16 +110,24 @@ implementation:
             print('Loading labels from:', labels_path)
             
             try:
-                if labels_path.endswith('.npy'):
-                    labels = np.load(labels_path)
-                elif labels_path.endswith('.csv'):
-                    df = pd.read_csv(labels_path)
-                    if len(df.columns) == 1:
-                        labels = df.iloc[:, 0].values
-                    else:
-                        labels = df.iloc[:, -1].values
-                else:
-                    raise ValueError("Unsupported format. Use .npy or .csv")
+                labels = None
+                
+                try:
+                    labels = np.load(labels_path, allow_pickle=False)
+                    print('Loaded as NPY successfully')
+                except Exception as npy_error:
+                    try:
+                        df = pd.read_csv(labels_path)
+                        if len(df.columns) == 1:
+                            labels = df.iloc[:, 0].values
+                        else:
+                            labels = df.iloc[:, -1].values
+                        print('Loaded as CSV successfully')
+                    except Exception as csv_error:
+                        print('Failed to load labels')
+                        print('Attempted NPY - Error:', str(npy_error))
+                        print('Attempted CSV - Error:', str(csv_error))
+                        raise ValueError("Could not load labels as NPY or CSV. Ensure file is in correct format.")
                 
                 print('Loaded successfully')
                 print('Length:', len(labels))
