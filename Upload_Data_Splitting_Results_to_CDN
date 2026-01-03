@@ -62,7 +62,6 @@ implementation:
             description="Upload Data Splitting Results to CDN"
         )
         
-        # Input files
         parser.add_argument('--train_data', required=True,
                            help="Path to training data CSV")
         parser.add_argument('--test_data', required=True,
@@ -70,7 +69,6 @@ implementation:
         parser.add_argument('--test_ground_truth', required=True,
                            help="Path to test ground truth NPY")
         
-        # Authentication and domain
         parser.add_argument('--bearer_token', required=True,
                            help="Bearer token string")
         parser.add_argument('--domain', required=True,
@@ -78,7 +76,6 @@ implementation:
         parser.add_argument('--get_cdn', required=True,
                            help="CDN base URL")
         
-        # Output paths for CDN URLs
         parser.add_argument('--output_train_data_cdn_url', required=True,
                            help="Output path for train data CDN URL")
         parser.add_argument('--output_test_data_cdn_url', required=True,
@@ -93,24 +90,21 @@ implementation:
         print("="*80)
         print("CDN UPLOAD COMPONENT - DATA SPLITTING RESULTS")
         print("="*80)
-        print(f"Domain: {args.domain}")
-        print(f"CDN Base: {args.get_cdn}")
+        print("Domain:", args.domain)
+        print("CDN Base:", args.get_cdn)
         print("")
         
-        # Use bearer token directly (it's passed as a string)
         bearer_token = args.bearer_token
-        print("✓ Bearer token loaded")
+        print("Bearer token loaded")
         print("")
         
-        # Construct upload URL
         upload_url = (
-            f"{args.domain}"
+            args.domain +
             "/mobius-content-service/v1.0/content/upload"
             "?filePathAccess=private&filePath=%2Fbottle%2Flimka%2Fsoda%2F"
         )
         
         def encode_special_chars(text):
-            # URL encode special characters
             text = text.replace("$", "%24")
             text = text.replace("(", "%28")
             text = text.replace(")", "%29")
@@ -121,135 +115,137 @@ implementation:
             text = text.replace(" ", "%20")
             return text
         
-        def sanitize_filename(file_path):
-            # Get original filename and sanitize it
+        def get_file_extension(file_path):
+            _, ext = os.path.splitext(file_path)
+            return ext
+        
+        def ensure_proper_filename(file_path, expected_ext):
             original_name = os.path.basename(file_path)
-            sanitized_name = encode_special_chars(original_name)
+            print('  Original filename:', original_name)
             
-            if sanitized_name != original_name:
-                # Create a copy with sanitized name
+            current_ext = get_file_extension(original_name)
+            print('  Current extension:', current_ext if current_ext else '(none)')
+            
+            if not current_ext or current_ext != expected_ext:
+                print('  WARNING: File missing proper extension!')
+                print('  Expected:', expected_ext)
+                
                 temp_dir = tempfile.gettempdir()
-                sanitized_path = os.path.join(temp_dir, sanitized_name)
-                shutil.copy2(file_path, sanitized_path)
-                return sanitized_path, sanitized_path  # return path and temp file
+                base_name = os.path.splitext(original_name)[0]
+                if not base_name:
+                    base_name = 'file'
+                
+                new_name = base_name + expected_ext
+                new_path = os.path.join(temp_dir, new_name)
+                
+                print('  Creating copy with proper extension:', new_name)
+                shutil.copy2(file_path, new_path)
+                return new_path, new_path
             
             return file_path, None
         
-        def upload_file(file_path, file_description, output_path):
-            # Upload a single file to CDN
-            print(f"Uploading {file_description}...")
-            print(f"  Local path: {file_path}")
+        def upload_file(file_path, file_description, expected_ext, output_path):
+            print('Uploading', file_description)
+            print('  Local path:', file_path)
             
-            # Check if file exists
             if not os.path.exists(file_path):
-                raise FileNotFoundError(f"File not found: {file_path}")
+                raise FileNotFoundError('File not found: ' + str(file_path))
             
-            # Get file size
             file_size = os.path.getsize(file_path)
-            print(f"  File size: {file_size:,} bytes ({file_size/1024:.2f} KB)")
+            print('  File size:', str(file_size) + ' bytes (' + str(round(file_size/1024, 2)) + ' KB)')
             
-            # Sanitize filename
-            sanitized_path, temp_file = sanitize_filename(file_path)
+            if file_size == 0:
+                raise ValueError('File is empty (0 bytes): ' + str(file_path))
+            
+            proper_path, temp_file = ensure_proper_filename(file_path, expected_ext)
             
             try:
-                # Prepare curl command
                 cmd = [
                     "curl",
                     "--location", upload_url,
-                    "--header", f"Authorization: Bearer {bearer_token}",
-                    "--form", f"file=@{sanitized_path}",
+                    "--header", "Authorization: Bearer " + bearer_token,
+                    "--form", "file=@" + proper_path,
                     "--fail",
                     "--show-error",
                     "--silent"
                 ]
                 
-                print(f"  Uploading to CDN...")
+                print('  Uploading to CDN...')
                 result = subprocess.run(cmd, capture_output=True, check=True)
                 
-                # Parse response
                 response = json.loads(result.stdout.decode())
                 
-                # Get CDN URL
                 relative_url = response.get("cdnUrl")
                 if not relative_url:
-                    raise RuntimeError(f"cdnUrl missing in response: {response}")
+                    raise RuntimeError('cdnUrl missing in response: ' + str(response))
                 
-                # Encode special characters in URL
+                print('  CDN relative URL:', relative_url)
+                
                 relative_url = encode_special_chars(relative_url)
-                full_url = f"{args.get_cdn}{relative_url}"
+                full_url = args.get_cdn + relative_url
                 
-                print(f"  ✓ Upload successful")
-                print(f"  CDN URL: {full_url}")
+                print('  Upload successful')
+                print('  Full CDN URL:', full_url)
                 print("")
                 
-                # Save URL to output file
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 with open(output_path, "w") as f:
                     f.write(full_url)
                 
-                return full_url
+                return {
+                    'url': full_url,
+                    'size_bytes': file_size,
+                    'size_kb': round(file_size / 1024, 2),
+                    'original_filename': os.path.basename(file_path),
+                    'uploaded_filename': os.path.basename(proper_path)
+                }
             
             except subprocess.CalledProcessError as e:
-                print(f"  ✗ Upload failed!")
-                print(f"  Error: {e.stderr.decode()}")
+                print('  Upload failed!')
+                print('  Error:', e.stderr.decode())
                 raise
             
             finally:
-                # Clean up temporary file if created
                 if temp_file and os.path.exists(temp_file):
                     try:
                         os.remove(temp_file)
                     except Exception:
                         pass
         
-        # Upload all three files
         upload_results = {}
         
         try:
-            # 1. Upload training data
-            train_url = upload_file(
+            train_result = upload_file(
                 args.train_data,
-                "Training Data (train_data.csv)",
+                "Training Data",
+                ".csv",
                 args.output_train_data_cdn_url
             )
-            upload_results['train_data_cdn_url'] = train_url
+            upload_results['train_data'] = train_result
             
-            # 2. Upload test data
-            test_url = upload_file(
+            test_result = upload_file(
                 args.test_data,
-                "Test Data (test_data.csv)",
+                "Test Data",
+                ".csv",
                 args.output_test_data_cdn_url
             )
-            upload_results['test_data_cdn_url'] = test_url
+            upload_results['test_data'] = test_result
             
-            # 3. Upload test ground truth
-            test_gt_url = upload_file(
+            test_gt_result = upload_file(
                 args.test_ground_truth,
-                "Test Ground Truth (test_ground_truth.npy)",
+                "Test Ground Truth",
+                ".npy",
                 args.output_test_ground_truth_cdn_url
             )
-            upload_results['test_ground_truth_cdn_url'] = test_gt_url
+            upload_results['test_ground_truth'] = test_gt_result
             
-            # Create upload summary
             summary = {
                 'timestamp': int(time.time()),
                 'upload_status': 'success',
                 'files_uploaded': 3,
-                'train_data': {
-                    'cdn_url': train_url,
-                    'local_path': args.train_data
-                },
-                'test_data': {
-                    'cdn_url': test_url,
-                    'local_path': args.test_data
-                },
-                'test_ground_truth': {
-                    'cdn_url': test_gt_url,
-                    'local_path': args.test_ground_truth
-                }
+                'files': upload_results
             }
             
-            # Save summary
             os.makedirs(os.path.dirname(args.output_upload_summary), exist_ok=True)
             with open(args.output_upload_summary, "w") as f:
                 json.dump(summary, f, indent=2)
@@ -257,10 +253,13 @@ implementation:
             print("="*80)
             print("CDN UPLOAD COMPLETED SUCCESSFULLY")
             print("="*80)
-            print(f"Files uploaded: 3")
-            print(f"Training data URL: {train_url}")
-            print(f"Test data URL: {test_url}")
-            print(f"Test ground truth URL: {test_gt_url}")
+            print("Files uploaded: 3")
+            print("Training data:", train_result['url'])
+            print("  Size:", str(train_result['size_kb']), 'KB')
+            print("Test data:", test_result['url'])
+            print("  Size:", str(test_result['size_kb']), 'KB')
+            print("Test ground truth:", test_gt_result['url'])
+            print("  Size:", str(test_gt_result['size_kb']), 'KB')
             print("="*80)
             
         except Exception as e:
@@ -268,15 +267,15 @@ implementation:
             print("="*80)
             print("CDN UPLOAD FAILED")
             print("="*80)
-            print(f"Error: {str(e)}")
+            print("Error:", str(e))
             print("="*80)
             
-            # Create error summary
             error_summary = {
                 'timestamp': int(time.time()),
                 'upload_status': 'failed',
                 'error': str(e),
-                'files_uploaded': len(upload_results)
+                'files_uploaded': len(upload_results),
+                'files': upload_results
             }
             
             os.makedirs(os.path.dirname(args.output_upload_summary), exist_ok=True)
