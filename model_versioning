@@ -26,10 +26,6 @@ inputs:
     type: String
     description: 'Version generation strategy: auto, semantic, or timestamp'
     default: 'semantic'
-  - name: registry_path
-    type: String
-    description: 'Path to model registry JSON file'
-    default: 'model_registry.json'
 
 outputs:
   - name: versioned_model
@@ -377,8 +373,6 @@ implementation:
                                help='Manual version string')
             parser.add_argument('--version_strategy', default='semantic',
                                help='Version generation strategy')
-            parser.add_argument('--registry_path', default='model_registry.json',
-                               help='Path to model registry')
             
             parser.add_argument('--output_versioned_model', required=True,
                                help='Output path for versioned model')
@@ -404,7 +398,9 @@ implementation:
                 evaluation_results = load_json(args.evaluation_results, "evaluation results")
                 validation_results = load_json(args.validation_results, "validation results")
                 
-                versioning = ModelVersioning(registry_path=args.registry_path)
+                # Use working directory for registry
+                registry_path = os.path.join('/tmp', 'model_registry.json')
+                versioning = ModelVersioning(registry_path=registry_path)
                 
                 if not versioning.check_validation_approval(validation_results):
                     print('')
@@ -421,10 +417,9 @@ implementation:
                     print("  4. Review data quality")
                     print("="*80)
                     
-                    os.makedirs(os.path.dirname(args.output_versioned_model), exist_ok=True)
-                    os.makedirs(os.path.dirname(args.output_version_metadata), exist_ok=True)
-                    os.makedirs(os.path.dirname(args.output_versioning_result), exist_ok=True)
-                    os.makedirs(os.path.dirname(args.output_model_registry), exist_ok=True)
+                    # Create output directories
+                    for output_path in [args.output_versioning_result, args.output_model_registry]:
+                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
                     
                     rejection_result = {
                         'success': False,
@@ -434,13 +429,16 @@ implementation:
                     with open(args.output_versioning_result, 'w') as f:
                         json.dump(rejection_result, f, indent=2)
                     
+                    # Save empty registry
                     versioning._save_registry()
-                    shutil.copy2(args.registry_path, args.output_model_registry)
+                    os.makedirs(os.path.dirname(args.output_model_registry), exist_ok=True)
+                    shutil.copy2(registry_path, args.output_model_registry)
                     
                     return
                 
-                if args.version:
-                    version = args.version
+                # Determine version
+                if args.version and args.version.strip():
+                    version = args.version.strip()
                     print('')
                     print('Using manual version:', version)
                 else:
@@ -470,7 +468,9 @@ implementation:
                 print('')
                 print('Versioning result saved:', args.output_versioning_result)
                 
-                shutil.copy2(args.registry_path, args.output_model_registry)
+                # Copy registry to output
+                os.makedirs(os.path.dirname(args.output_model_registry), exist_ok=True)
+                shutil.copy2(registry_path, args.output_model_registry)
                 print('Model registry saved:', args.output_model_registry)
                 
                 registry_info = versioning.get_registry_info()
@@ -503,6 +503,7 @@ implementation:
                 print('')
                 print("="*80)
                 print("MODEL VERSIONING COMPLETED SUCCESSFULLY")
+                print("="*80)
                 
             except Exception as e:
                 print('')
@@ -528,8 +529,6 @@ implementation:
       - {inputValue: version}
       - --version_strategy
       - {inputValue: version_strategy}
-      - --registry_path
-      - {inputValue: registry_path}
       - --output_versioned_model
       - {outputPath: versioned_model}
       - --output_version_metadata
