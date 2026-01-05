@@ -58,13 +58,6 @@ implementation:
   container:
     image: nikhilv215/nesy-factory:v23
     command:
-      - sh
-      - -ec
-      - |
-        if ! command -v curl >/dev/null 2>&1; then
-          apt-get update >/dev/null && apt-get install -y curl >/dev/null
-        fi
-        exec "$0" "$@"
       - python3
       - -u
       - -c
@@ -74,6 +67,8 @@ implementation:
         import json
         import os
         import time
+        import sys
+        import requests  # Add requests library
 
         parser = argparse.ArgumentParser()
 
@@ -254,76 +249,94 @@ implementation:
         print("="*80)
 
         print("")
-        print(f"Trigger URL: {trigger_url}")
-        print(f"Pipeline ID: {args.next_pipeline_id}")
-        print(f"Experiment ID: {args.experiment_id}")
+        print("[DEBUG] Triggering pipeline at: {0}".format(trigger_url))
+        print("[DEBUG] Selected Pipeline ID: {0}".format(args.next_pipeline_id))
+        print("[DEBUG] Experiment ID: {0}".format(args.experiment_id))
+        print("[DEBUG] Model ID: {0}".format(args.model_id))
+        print("[DEBUG] Execution ID: {0}".format(args.execution_id))
+        print("[DEBUG] Training Algorithm: {0}".format(args.training_algorithm))
+        print("[DEBUG] Payload:")
+        print(json.dumps(payload, indent=2))
         
-        # Write payload to temp file to avoid shell escaping issues with special characters
-        import tempfile
-        payload_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
-        json.dump(payload, payload_file, indent=2)
-        payload_file.close()
+        # Headers for requests
+        headers = {
+            "accept": "application/json",
+            "Authorization": f"Bearer {bearer_token}",
+            "Content-Type": "application/json"
+        }
         
-        print(f"Payload written to: {payload_file.name}")
-        
-        # Make the request
-        curl_command = [
-            "curl",
-            "--location", trigger_url,
-            "--header", "accept: application/json",
-            "--header", f"Authorization: Bearer {bearer_token}",
-            "--header", "Content-Type: application/json",
-            "--data", f"@{payload_file.name}",
-            "--fail",
-            "--show-error",
-            "--connect-timeout", "30",
-            "--silent"
-        ]
-        
+        # Make the request using requests library (more reliable than curl)
         print("")
         print("Sending trigger request...")
         retries = 3
         for i in range(retries):
             try:
-                process = subprocess.run(
-                    curl_command,
-                    capture_output=True,
-                    check=True,
-                    text=True
+                resp = requests.post(
+                    trigger_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=60
                 )
                 
-                print("Trigger successful!")
-                response_text = process.stdout
+                if not resp.ok:
+                    error_detail = ""
+                    try:
+                        error_json = resp.json()
+                        error_detail = json.dumps(error_json, indent=2)
+                    except:
+                        error_detail = resp.text
+                    
+                    print(f"[ERROR] Trigger failed with status {resp.status_code}", file=sys.stderr)
+                    print(f"[ERROR] Response: {error_detail}", file=sys.stderr)
+                    
+                    if resp.status_code == 404:
+                        print("[ERROR] Pipeline not found. Please verify:", file=sys.stderr)
+                        print(f"  - Pipeline ID is correct: {args.next_pipeline_id}", file=sys.stderr)
+                        print(f"  - Domain is correct: {args.domine}", file=sys.stderr)
+                    elif resp.status_code == 401 or resp.status_code == 403:
+                        print("[ERROR] Authentication/Authorization failed", file=sys.stderr)
+                    elif resp.status_code == 500:
+                        print("[ERROR] Server error - check if pipeline components are registered", file=sys.stderr)
+                    
+                    resp.raise_for_status()
+                
+                # Success!
+                response_text = resp.text
                 
                 # Save trigger response
                 os.makedirs(os.path.dirname(args.trigger_response), exist_ok=True)
                 with open(args.trigger_response, "w") as f:
                     f.write(response_text)
                 
-                # Parse and print response
+                # Parse and check for runId
                 try:
                     response_json = json.loads(response_text)
-                    print(f"Response: {json.dumps(response_json, indent=2)}")
-                except:
+                    run_id = response_json.get('runId', '')
+                    
+                    if run_id:
+                        print("[SUCCESS] Pipeline triggered successfully")
+                        print("[SUCCESS] Run ID: {0}".format(run_id))
+                    else:
+                        print("[WARNING] Trigger accepted but NO RUN ID returned!")
+                        print("[WARNING] This means the pipeline was NOT actually started")
+                        print("[WARNING] Most likely cause: Pipeline components not registered in catalog")
+                    
+                    print("[SUCCESS] Response:")
+                    print(json.dumps(response_json, indent=2))
+                except Exception as e:
+                    print(f"[WARNING] Could not parse response as JSON: {e}")
                     print(f"Raw response: {response_text}")
                 
                 break
                 
-            except subprocess.CalledProcessError as e:
-                print(f"Attempt {i+1} failed: {e.returncode}")
-                print(f"Error: {e.stderr}")
+            except requests.exceptions.RequestException as e:
+                print(f"Attempt {i+1} failed: {str(e)}", file=sys.stderr)
                 if i < retries - 1:
                     print(f"Retrying in 10 seconds...")
                     time.sleep(10)
                 else:
+                    print(f"[ERROR] All {retries} attempts failed", file=sys.stderr)
                     raise
-        
-        # Clean up temp file
-        try:
-            os.unlink(payload_file.name)
-            print(f"Cleaned up temp file: {payload_file.name}")
-        except:
-            pass
         
         # Step 3: Save CDN URLs JSON
         print("")
