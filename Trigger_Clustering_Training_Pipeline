@@ -170,6 +170,7 @@ implementation:
         
         # Step 2: Trigger the training pipeline
         print("\n[STEP 2] Triggering clustering training pipeline...")
+        print("Note: Unlike XGBoost, clustering doesn't need combined pickle - passing URLs directly")
         
         trigger_url = f"{args.domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={args.next_pipeline_id}"
         
