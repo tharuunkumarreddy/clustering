@@ -1,0 +1,320 @@
+name: Clustering Model Schema Updater
+description: Updates the model schema with clustering model metadata and configuration
+
+inputs:
+  - name: schema_id
+    type: String
+    description: "The ID of the model schema to update"
+  - name: training_metadata
+    type: String
+    description: "Training metadata JSON from clustering training component"
+  - name: model_cdn_url
+    type: String
+    description: "CDN URL for the trained model (optional)"
+    default: ""
+  - name: metadata_cdn_url
+    type: String
+    description: "CDN URL for the metadata (optional)"
+    default: ""
+  - name: model_id
+    type: String
+    description: "The ID of the model"
+  - name: execution_id
+    type: String
+    description: "The ID of the execution"
+  - name: tenant_id
+    type: String
+    description: "The ID of the tenant"
+  - name: project_id
+    type: String
+    description: "The ID of the project"
+  - name: bearer_auth_token
+    type: String
+    description: "Bearer token for authentication"
+  - name: domain
+    type: String
+    description: "The domain for the API endpoint"
+  - name: model_name
+    type: String
+    description: "Optional custom model name"
+    default: ""
+
+outputs:
+  - name: model_schema_updated
+    type: String
+    description: "Confirmation of model schema update"
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import json
+        import argparse
+        import requests
+        from datetime import datetime
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import os
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--schema_id', type=str, required=True)
+        parser.add_argument('--training_metadata', type=str, required=True)
+        parser.add_argument('--model_cdn_url', type=str, default="")
+        parser.add_argument('--metadata_cdn_url', type=str, default="")
+        parser.add_argument('--model_id', type=str, required=True)
+        parser.add_argument('--execution_id', type=str, required=True)
+        parser.add_argument('--tenant_id', type=str, required=True)
+        parser.add_argument('--project_id', type=str, required=True)
+        parser.add_argument('--bearer_auth_token', type=str, required=True)
+        parser.add_argument('--domain', type=str, required=True)
+        parser.add_argument('--model_name', type=str, default="")
+        parser.add_argument('--model_schema_updated', type=str, required=True)
+        args = parser.parse_args()
+
+        print("="*80)
+        print("CLUSTERING MODEL SCHEMA UPDATER")
+        print("="*80)
+
+        # Create output directory
+        output_dir = os.path.dirname(args.model_schema_updated)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Read input files
+        print("")
+        print("Loading inputs...")
+        
+        with open(args.training_metadata, 'r') as f:
+            metadata = json.load(f)
+        print("Training metadata loaded")
+        
+        with open(args.bearer_auth_token, 'r') as f:
+            bearer_auth_token = f.read().strip()
+        
+        with open(args.tenant_id, 'r') as f:
+            tenant_id = f.read().strip()
+
+        # Parse execution_id to int (primary key)
+        try:
+            execution_id_int = int(args.execution_id)
+        except (ValueError, TypeError):
+            print(f"Warning: execution_id '{args.execution_id}' is not a valid integer. Using 0.")
+            execution_id_int = 0
+
+        # Parse experiment_id (model schema uses this)
+        try:
+            experiment_id_int = int(args.model_id)
+        except (ValueError, TypeError):
+            print(f"Warning: model_id '{args.model_id}' cannot be converted to integer. Using 0.")
+            experiment_id_int = 0
+
+        # Extract info from metadata
+        algorithm = metadata.get('algorithm', 'Unknown')
+        category = metadata.get('category', 'unknown')
+        training_results = metadata.get('training_results', {})
+        parameters = metadata.get('parameters', {})
+        
+        n_train_samples = training_results.get('n_train_samples', 0)
+        n_features = training_results.get('n_features', 0)
+        n_clusters = training_results.get('n_clusters', 0)
+
+        print("")
+        print("Metadata summary:")
+        print(f"  Algorithm: {algorithm}")
+        print(f"  Category: {category}")
+        print(f"  Train samples: {n_train_samples}")
+        print(f"  Features: {n_features}")
+        print(f"  Clusters: {n_clusters}")
+
+        # Create model name
+        if not args.model_name:
+            model_name = f"{algorithm}_clustering_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        else:
+            model_name = args.model_name
+
+        # Prepare shapes
+        input_shape = f"[{n_train_samples}, {n_features}]"
+        output_shape = f"{n_clusters} clusters"
+
+        # Model URLs
+        model_url = args.model_cdn_url if args.model_cdn_url else "N/A"
+        metadata_url = args.metadata_cdn_url if args.metadata_cdn_url else "N/A"
+
+        # Create symbolic_profile with clustering info
+        symbolic_profile = json.dumps({
+            "algorithm": algorithm,
+            "category": category,
+            "task": "clustering",
+            "n_clusters": n_clusters,
+            "n_features": n_features,
+            "parameters": parameters
+        })
+
+        # Create model_specific_config with complete metadata
+        model_specific_config = json.dumps(metadata)
+
+        # Create model schema row
+        model_row = {
+            "execution_id": execution_id_int,
+            "experiment_id": experiment_id_int,
+            "model_id": args.model_id,
+            "tenant_id": tenant_id,
+            "projectId": args.project_id,
+            "name": model_name,
+            "architecture_type": "clustering", 
+            "symbolic_profile": symbolic_profile,
+            "input_shape": input_shape,
+            "output_shape": output_shape,
+            "model_url": model_url,
+            "model_weights_cdn": model_url,
+            "model_metadata_cdn": metadata_url,
+            "parameter_count": str(n_features),
+            "model_specific_config": model_specific_config,
+            "source": "auto-generated",
+            "created_by": "clustering_pipeline",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        print("")
+        print("Model row prepared:")
+        print(json.dumps(model_row, indent=2))
+
+        # Set up API call
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {bearer_auth_token}'
+        }
+
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[408, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "PUT", "POST", "DELETE", "OPTIONS", "TRACE"],
+            backoff_factor=1
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        http = requests.Session()
+        http.mount("https://", adapter)
+        http.mount("http://", adapter)
+
+        # Check if row exists
+        check_url = f"{args.domain}/pi-entity-instances-service/v3.0/schemas/{args.schema_id}/instances/list"
+        check_payload = {
+            "dbType": "TIDB",
+            "ownedOnly": True,
+            "filter": {
+                "execution_id": execution_id_int,
+                "model_id": args.model_id,
+                "projectId": args.project_id
+            }
+        }
+
+        print("")
+        print(f"Checking for existing model with execution_id: {execution_id_int}, model_id: {args.model_id}")
+        
+        try:
+            response = http.post(check_url, headers=headers, json=check_payload, timeout=60)
+            response.raise_for_status()
+            response_data = response.json()
+            
+            if response_data.get("content"):
+                print("Model instance found: Updating row")
+                update_url = f"{args.domain}/pi-entity-instances-service/v2.0/schemas/{args.schema_id}/instances"
+                update_payload = {
+                    "dbType": "TIDB",
+                    "conditionalFilter": {
+                        "conditions": [
+                            {"field": "execution_id", "operator": "EQUAL", "value": execution_id_int},
+                            {"field": "model_id", "operator": "EQUAL", "value": args.model_id},
+                            {"field": "projectId", "operator": "EQUAL", "value": args.project_id}
+                        ]
+                    },
+                    "partialUpdateRequests": [{
+                        "patch": [
+                            {"operation": "REPLACE", "path": "name", "value": model_row["name"]},
+                            {"operation": "REPLACE", "path": "symbolic_profile", "value": model_row["symbolic_profile"]},
+                            {"operation": "REPLACE", "path": "input_shape", "value": model_row["input_shape"]},
+                            {"operation": "REPLACE", "path": "output_shape", "value": model_row["output_shape"]},
+                            {"operation": "REPLACE", "path": "model_url", "value": model_row["model_url"]},
+                            {"operation": "REPLACE", "path": "model_weights_cdn", "value": model_row["model_weights_cdn"]},
+                            {"operation": "REPLACE", "path": "model_metadata_cdn", "value": model_row["model_metadata_cdn"]},
+                            {"operation": "REPLACE", "path": "parameter_count", "value": model_row["parameter_count"]},
+                            {"operation": "REPLACE", "path": "model_specific_config", "value": model_row["model_specific_config"]},
+                            {"operation": "REPLACE", "path": "experiment_id", "value": model_row["experiment_id"]},
+                            {"operation": "REPLACE", "path": "architecture_type", "value": model_row["architecture_type"]},
+                            {"operation": "REPLACE", "path": "source", "value": model_row["source"]}
+                        ]
+                    }]
+                }
+                
+                response = http.patch(update_url, headers=headers, json=update_payload, timeout=60)
+                response.raise_for_status()
+                print("Successfully updated model instance")
+            else:
+                print("No model instance found: Creating new row")
+                create_url = f"{args.domain}/pi-entity-instances-service/v2.0/schemas/{args.schema_id}/instances"
+                create_payload = {"data": [model_row]}
+                
+                response = http.post(create_url, headers=headers, json=create_payload, timeout=60)
+                response.raise_for_status()
+                print("Successfully created new model instance")
+            
+            print(f"Response: {response.json()}")
+            
+            # Write success confirmation
+            with open(args.model_schema_updated, 'w') as f:
+                json.dump({
+                    "status": "success",
+                    "message": "Model schema updated successfully",
+                    "model_name": model_name,
+                    "algorithm": algorithm
+                }, f)
+
+            print("")
+            print("="*80)
+            print("MODEL SCHEMA UPDATE COMPLETED")
+            print("="*80)
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error: {e}")
+            if e.response is not None:
+                print(f"Response Status Code: {e.response.status_code}")
+                print(f"Response Content: {e.response.text}")
+            
+            # Write error confirmation
+            with open(args.model_schema_updated, 'w') as f:
+                json.dump({
+                    "status": "error",
+                    "message": str(e),
+                    "row_data": model_row
+                }, f)
+            exit(1)
+
+    args:
+      - --schema_id
+      - {inputValue: schema_id}
+      - --training_metadata
+      - {inputPath: training_metadata}
+      - --model_cdn_url
+      - {inputValue: model_cdn_url}
+      - --metadata_cdn_url
+      - {inputValue: metadata_cdn_url}
+      - --model_id
+      - {inputValue: model_id}
+      - --execution_id
+      - {inputValue: execution_id}
+      - --tenant_id
+      - {inputPath: tenant_id}
+      - --project_id
+      - {inputValue: project_id}
+      - --bearer_auth_token
+      - {inputPath: bearer_auth_token}
+      - --domain
+      - {inputValue: domain}
+      - --model_name
+      - {inputValue: model_name}
+      - --model_schema_updated
+      - {outputPath: model_schema_updated}
