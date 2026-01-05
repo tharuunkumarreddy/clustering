@@ -62,7 +62,7 @@ implementation:
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--schema_id', type=str, required=True)
-        parser.add_argument('--training_metadata', type=str, required=True)  # ✅ Now reads as file path
+        parser.add_argument('--training_metadata', type=str, required=True)
         parser.add_argument('--model_cdn_url', type=str, default="")
         parser.add_argument('--metadata_cdn_url', type=str, default="")
         parser.add_argument('--model_id', type=str, required=True)
@@ -88,16 +88,13 @@ implementation:
         print("")
         print("Loading inputs...")
         
-        # ✅ FIXED: Read training_metadata as FILE (not string)
         with open(args.training_metadata, 'r') as f:
             metadata = json.load(f)
         print("Training metadata loaded")
         
-        # ✅ Read bearer token as FILE
         with open(args.bearer_auth_token, 'r') as f:
             bearer_auth_token = f.read().strip()
         
-        # ✅ Read tenant_id as FILE
         with open(args.tenant_id, 'r') as f:
             tenant_id = f.read().strip()
 
@@ -147,18 +144,23 @@ implementation:
         model_url = args.model_cdn_url if args.model_cdn_url else "N/A"
         metadata_url = args.metadata_cdn_url if args.metadata_cdn_url else "N/A"
 
-        # Create symbolic_profile with clustering info
-        symbolic_profile = json.dumps({
+        # ✅ CRITICAL FIX: Create symbolic_profile as JSON object (not string)
+        symbolic_profile = {
             "algorithm": algorithm,
             "category": category,
             "task": "clustering",
             "n_clusters": n_clusters,
             "n_features": n_features,
             "parameters": parameters
-        })
+        }
 
-        # Create model_specific_config with complete metadata
-        model_specific_config = json.dumps(metadata)
+        # ✅ CRITICAL FIX: Keep model_specific_config as JSON object (not string)
+        model_specific_config = metadata
+
+        print("")
+        print("Data types check:")
+        print(f"  symbolic_profile type: {type(symbolic_profile).__name__}")
+        print(f"  model_specific_config type: {type(model_specific_config).__name__}")
 
         # Create model schema row
         model_row = {
@@ -168,15 +170,15 @@ implementation:
             "tenant_id": tenant_id,
             "projectId": args.project_id,
             "name": model_name,
-            "architecture_type": "GRM",
-            "symbolic_profile": symbolic_profile,
+            "architecture_type": "clustering",  # ✅ Changed from "GRM" to "clustering" (matches schema enum)
+            "symbolic_profile": json.dumps(symbolic_profile),  # ✅ String type in schema
             "input_shape": input_shape,
             "output_shape": output_shape,
             "model_url": model_url,
             "model_weights_cdn": model_url,
             "model_metadata_cdn": metadata_url,
             "parameter_count": str(n_features),
-            "model_specific_config": model_specific_config,
+            "model_specific_config": model_specific_config,  # ✅ JSON object (not stringified)
             "source": "auto-generated",
             "created_by": "clustering_pipeline",
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -184,7 +186,12 @@ implementation:
 
         print("")
         print("Model row prepared:")
-        print(json.dumps(model_row, indent=2))
+        print(f"  execution_id: {model_row['execution_id']}")
+        print(f"  model_id: {model_row['model_id']}")
+        print(f"  name: {model_row['name']}")
+        print(f"  architecture_type: {model_row['architecture_type']}")
+        print(f"  symbolic_profile type: {type(model_row['symbolic_profile']).__name__}")
+        print(f"  model_specific_config type: {type(model_row['model_specific_config']).__name__}")
 
         # Set up API call
         headers = {
@@ -261,6 +268,10 @@ implementation:
                 create_url = f"{args.domain}/pi-entity-instances-service/v2.0/schemas/{args.schema_id}/instances"
                 create_payload = {"data": [model_row]}
                 
+                print("")
+                print("Create payload (first 500 chars):")
+                print(json.dumps(create_payload, indent=2)[:500])
+                
                 response = http.post(create_url, headers=headers, json=create_payload, timeout=60)
                 response.raise_for_status()
                 print("Successfully created new model instance")
@@ -280,6 +291,9 @@ implementation:
             print("="*80)
             print("MODEL SCHEMA UPDATE COMPLETED")
             print("="*80)
+            print(f"Algorithm: {algorithm}")
+            print(f"Model Name: {model_name}")
+            print("="*80)
 
         except requests.exceptions.RequestException as e:
             print(f"Error: {e}")
@@ -292,7 +306,7 @@ implementation:
                 json.dump({
                     "status": "error",
                     "message": str(e),
-                    "row_data": model_row
+                    "model_name": model_name
                 }, f)
             exit(1)
 
@@ -300,7 +314,7 @@ implementation:
       - --schema_id
       - {inputValue: schema_id}
       - --training_metadata
-      - {inputPath: training_metadata}  # ✅ FIXED: inputPath (not inputValue)
+      - {inputPath: training_metadata}
       - --model_cdn_url
       - {inputValue: model_cdn_url}
       - --metadata_cdn_url
