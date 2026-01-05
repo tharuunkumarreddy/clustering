@@ -1,0 +1,355 @@
+name: Trigger Clustering Training Pipeline
+description: Reads CDN URLs from preprocessing and triggers clustering training pipeline
+
+inputs:
+  # CDN URL files from Upload brick
+  - {name: train_data_cdn_url, type: String, description: "File containing train data CDN URL"}
+  - {name: test_data_cdn_url, type: String, description: "File containing test data CDN URL"}
+  - {name: test_ground_truth_cdn_url, type: String, description: "File containing test ground truth CDN URL"}
+  
+  # Authentication
+  - {name: bearer_token, type: String, description: "Bearer token file"}
+  - {name: domain, type: String, description: "API domain"}
+  
+  # Pipeline parameters
+  - {name: next_pipeline_id, type: String, description: "Training pipeline ID to trigger"}
+  - {name: experiment_id, type: String, description: "Experiment ID"}
+  - {name: model_id, type: String, description: "Model ID"}
+  - {name: project_id, type: String, description: "Project ID"}
+  - {name: execution_id, type: String, description: "Execution ID"}
+  
+  # Clustering config
+  - {name: training_algorithm, type: String, description: "Clustering algorithm"}
+  - {name: training_algo_params, type: String, description: "Algorithm parameters JSON"}
+  - {name: auto_tune, type: String, default: "false"}
+  - {name: training_mode, type: String, default: "auto"}
+  - {name: inference_mode, type: String, default: "auto"}
+  - {name: dataset_name, type: String, default: "test"}
+  - {name: per_cluster, type: String, default: "false"}
+  - {name: thresholds, type: String, description: "Validation thresholds JSON"}
+  - {name: version_strategy, type: String, default: "semantic"}
+  - {name: registry_path, type: String, default: "model_registry.json"}
+  
+  # Schema IDs
+  - {name: model_schema_id, type: String}
+  - {name: train_schema_id, type: String}
+  - {name: eval_schema_id, type: String}
+  
+  # Additional params
+  - {name: userName, type: String}
+  - {name: password, type: String}
+  - {name: productId, type: String}
+  - {name: requestType, type: String}
+  - {name: get_cdn, type: String}
+  - {name: model_name, type: String}
+
+outputs:
+  - {name: trigger_response, type: String}
+  - {name: cdn_urls_json, type: String}
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import subprocess
+        import json
+        import os
+        import time
+
+        parser = argparse.ArgumentParser()
+        
+        # CDN URL files
+        parser.add_argument('--train_data_cdn_url', required=True)
+        parser.add_argument('--test_data_cdn_url', required=True)
+        parser.add_argument('--test_ground_truth_cdn_url', required=True)
+        
+        # Auth
+        parser.add_argument('--bearer_token', required=True)
+        parser.add_argument('--domain', required=True)
+        
+        # Pipeline params
+        parser.add_argument('--next_pipeline_id', required=True)
+        parser.add_argument('--experiment_id', required=True)
+        parser.add_argument('--model_id', required=True)
+        parser.add_argument('--project_id', required=True)
+        parser.add_argument('--execution_id', required=True)
+        
+        # Clustering config
+        parser.add_argument('--training_algorithm', required=True)
+        parser.add_argument('--training_algo_params', required=True)
+        parser.add_argument('--auto_tune', default='false')
+        parser.add_argument('--training_mode', default='auto')
+        parser.add_argument('--inference_mode', default='auto')
+        parser.add_argument('--dataset_name', default='test')
+        parser.add_argument('--per_cluster', default='false')
+        parser.add_argument('--thresholds', required=True)
+        parser.add_argument('--version_strategy', default='semantic')
+        parser.add_argument('--registry_path', default='model_registry.json')
+        
+        # Schema IDs
+        parser.add_argument('--model_schema_id', required=True)
+        parser.add_argument('--train_schema_id', required=True)
+        parser.add_argument('--eval_schema_id', required=True)
+        
+        # Additional
+        parser.add_argument('--userName', required=True)
+        parser.add_argument('--password', required=True)
+        parser.add_argument('--productId', required=True)
+        parser.add_argument('--requestType', required=True)
+        parser.add_argument('--get_cdn', required=True)
+        parser.add_argument('--model_name', required=True)
+        
+        # Outputs
+        parser.add_argument('--trigger_response', required=True)
+        parser.add_argument('--cdn_urls_json', required=True)
+        
+        args = parser.parse_args()
+
+        print("="*80)
+        print("TRIGGER CLUSTERING TRAINING PIPELINE")
+        print("="*80)
+
+        # Read bearer token
+        with open(args.bearer_token, 'r') as f:
+            bearer_token = f.read().strip()
+
+        # Helper to read CDN URLs from files
+        def read_cdn_url(file_path):
+            with open(file_path, 'r') as f:
+                return f.read().strip()
+
+        # Helper to encode URLs
+        def encode_cdn_url(url):
+            url = url.replace(" ", "")
+            url = url.replace("$", "%24")
+            url = url.replace("(", "%28")
+            url = url.replace(")", "%29")
+            url = url.replace("[", "%5B")
+            url = url.replace("]", "%5D")
+            url = url.replace("{", "%7B")
+            url = url.replace("}", "%7D")
+            return url
+
+        # Read CDN URLs
+        print("\n[STEP 1] Reading CDN URLs...")
+        train_data_cdn = encode_cdn_url(read_cdn_url(args.train_data_cdn_url))
+        test_data_cdn = encode_cdn_url(read_cdn_url(args.test_data_cdn_url))
+        test_ground_truth_cdn = encode_cdn_url(read_cdn_url(args.test_ground_truth_cdn_url))
+
+        print(f"Train data CDN: {train_data_cdn[:80]}...")
+        print(f"Test data CDN: {test_data_cdn[:80]}...")
+        print(f"Test ground truth CDN: {test_ground_truth_cdn[:80]}...")
+
+        # Build trigger payload
+        print("\n[STEP 2] Building trigger payload...")
+        
+        trigger_url = f"{args.domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={args.next_pipeline_id}"
+        
+        payload = {
+            "pipelineType": "ML",
+            "containerResources": {},
+            "experimentId": args.experiment_id,
+            "enableCaching": True,
+            "parameters": {
+                # CDN URLs (will be downloaded by next pipeline)
+                "train_data_cdn_url": train_data_cdn,
+                "test_data_cdn_url": test_data_cdn,
+                "test_ground_truth_cdn_url": test_ground_truth_cdn,
+                
+                # Clustering config
+                "training_algorithm": args.training_algorithm,
+                "training_algo_params": args.training_algo_params,
+                "auto_tune": args.auto_tune,
+                "training_mode": args.training_mode,
+                "inference_mode": args.inference_mode,
+                "dataset_name": args.dataset_name,
+                "per_cluster": args.per_cluster,
+                "thresholds": args.thresholds,
+                "version_strategy": args.version_strategy,
+                "registry_path": args.registry_path,
+                
+                # IDs
+                "model_id": args.model_id,
+                "project_id": args.project_id,
+                "execution_id": args.execution_id,
+                
+                # Schema IDs
+                "model_schema_id": args.model_schema_id,
+                "train_schema_id": args.train_schema_id,
+                "eval_schema_id": args.eval_schema_id,
+                
+                # Auth & Domain
+                "userName": args.userName,
+                "password": args.password,
+                "productId": args.productId,
+                "requestType": args.requestType,
+                "domine": args.domain,
+                "get_cdn": args.get_cdn,
+                
+                # Model info
+                "model_name": args.model_name,
+                
+                # Placeholders (will be filled by training pipeline)
+                "model_cdn_url": "",
+                "metadata_cdn_url": ""
+            },
+            "version": 1
+        }
+
+        # Print payload for manual testing
+        print("\n" + "="*80)
+        print("PAYLOAD FOR MANUAL TRIGGER:")
+        print("="*80)
+        print(json.dumps(payload, indent=2))
+        print("="*80)
+
+        # Make trigger request
+        print("\n[STEP 3] Triggering training pipeline...")
+        
+        headers = {
+            "accept": "application/json",
+            "Authorization": f"Bearer {bearer_token}",
+            "Content-Type": "application/json"
+        }
+        
+        curl_command = [
+            "curl",
+            "--location", trigger_url,
+            "--header", f"accept: {headers['accept']}",
+            "--header", f"Authorization: {headers['Authorization']}",
+            "--header", f"Content-Type: {headers['Content-Type']}",
+            "--data", json.dumps(payload),
+            "--fail",
+            "--show-error",
+            "--connect-timeout", "30",
+            "--silent"
+        ]
+        
+        retries = 3
+        for i in range(retries):
+            try:
+                result = subprocess.run(
+                    curl_command,
+                    capture_output=True,
+                    check=True,
+                    text=True
+                )
+                
+                print("✅ Trigger successful!")
+                response_text = result.stdout
+                
+                # Save response
+                os.makedirs(os.path.dirname(args.trigger_response), exist_ok=True)
+                with open(args.trigger_response, 'w') as f:
+                    f.write(response_text)
+                
+                try:
+                    response_json = json.loads(response_text)
+                    print(f"Response: {json.dumps(response_json, indent=2)}")
+                except:
+                    print(f"Raw response: {response_text}")
+                
+                break
+                
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Attempt {i+1} failed: {e.returncode}")
+                print(f"Error: {e.stderr}")
+                if i < retries - 1:
+                    print(f"Retrying in 10 seconds...")
+                    time.sleep(10)
+                else:
+                    raise
+
+        # Save CDN URLs JSON
+        print("\n[STEP 4] Saving CDN info...")
+        cdn_info = {
+            "timestamp": int(time.time()),
+            "pipeline_id": args.next_pipeline_id,
+            "experiment_id": args.experiment_id,
+            "cdn_urls": {
+                "train_data_cdn": train_data_cdn,
+                "test_data_cdn": test_data_cdn,
+                "test_ground_truth_cdn": test_ground_truth_cdn
+            },
+            "trigger_payload": payload
+        }
+        
+        os.makedirs(os.path.dirname(args.cdn_urls_json), exist_ok=True)
+        with open(args.cdn_urls_json, 'w') as f:
+            json.dump(cdn_info, f, indent=2)
+
+        print("\n" + "="*80)
+        print("✅ TRAINING PIPELINE TRIGGERED SUCCESSFULLY")
+        print("="*80)
+        print(f"Next pipeline ID: {args.next_pipeline_id}")
+        print(f"Trigger response: {args.trigger_response}")
+        print("="*80)
+
+    args:
+      - --train_data_cdn_url
+      - {inputPath: train_data_cdn_url}
+      - --test_data_cdn_url
+      - {inputPath: test_data_cdn_url}
+      - --test_ground_truth_cdn_url
+      - {inputPath: test_ground_truth_cdn_url}
+      - --bearer_token
+      - {inputPath: bearer_token}
+      - --domain
+      - {inputValue: domain}
+      - --next_pipeline_id
+      - {inputValue: next_pipeline_id}
+      - --experiment_id
+      - {inputValue: experiment_id}
+      - --model_id
+      - {inputValue: model_id}
+      - --project_id
+      - {inputValue: project_id}
+      - --execution_id
+      - {inputValue: execution_id}
+      - --training_algorithm
+      - {inputValue: training_algorithm}
+      - --training_algo_params
+      - {inputValue: training_algo_params}
+      - --auto_tune
+      - {inputValue: auto_tune}
+      - --training_mode
+      - {inputValue: training_mode}
+      - --inference_mode
+      - {inputValue: inference_mode}
+      - --dataset_name
+      - {inputValue: dataset_name}
+      - --per_cluster
+      - {inputValue: per_cluster}
+      - --thresholds
+      - {inputValue: thresholds}
+      - --version_strategy
+      - {inputValue: version_strategy}
+      - --registry_path
+      - {inputValue: registry_path}
+      - --model_schema_id
+      - {inputValue: model_schema_id}
+      - --train_schema_id
+      - {inputValue: train_schema_id}
+      - --eval_schema_id
+      - {inputValue: eval_schema_id}
+      - --userName
+      - {inputValue: userName}
+      - --password
+      - {inputValue: password}
+      - --productId
+      - {inputValue: productId}
+      - --requestType
+      - {inputValue: requestType}
+      - --get_cdn
+      - {inputValue: get_cdn}
+      - --model_name
+      - {inputValue: model_name}
+      - --trigger_response
+      - {outputPath: trigger_response}
+      - --cdn_urls_json
+      - {outputPath: cdn_urls_json}
