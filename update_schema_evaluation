@@ -1,0 +1,380 @@
+name: Clustering Evaluation Schema Updater
+description: Updates the clustering evaluation schema with test evaluation metrics
+
+inputs:
+  - name: schema_id
+    type: String
+    description: "The ID of the clustering evaluation schema to update"
+  - name: evaluation_results
+    type: String
+    description: "Evaluation results JSON from clustering evaluation component"
+  - name: model_id
+    type: String
+    description: "The ID of the model"
+  - name: execution_id
+    type: String
+    description: "The ID of the execution"
+  - name: tenant_id
+    type: String
+    description: "The ID of the tenant"
+  - name: project_id
+    type: String
+    description: "The ID of the project"
+  - name: bearer_auth_token
+    type: String
+    description: "Bearer token for authentication"
+  - name: domain
+    type: String
+    description: "The domain for the API endpoint"
+
+outputs:
+  - name: evaluation_schema_updated
+    type: String
+    description: "Confirmation of evaluation schema update"
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import json
+        import argparse
+        import requests
+        import time
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import os
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--schema_id', type=str, required=True)
+        parser.add_argument('--evaluation_results', type=str, required=True)
+        parser.add_argument('--model_id', type=str, required=True)
+        parser.add_argument('--execution_id', type=str, required=True)
+        parser.add_argument('--tenant_id', type=str, required=True)
+        parser.add_argument('--project_id', type=str, required=True)
+        parser.add_argument('--bearer_auth_token', type=str, required=True)
+        parser.add_argument('--domain', type=str, required=True)
+        parser.add_argument('--evaluation_schema_updated', type=str, required=True)
+        args = parser.parse_args()
+
+        print("="*80)
+        print("CLUSTERING EVALUATION SCHEMA UPDATER")
+        print("="*80)
+
+        # Create output directory
+        output_dir = os.path.dirname(args.evaluation_schema_updated)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Read input files
+        print("")
+        print("Loading inputs...")
+        
+        try:
+            with open(args.evaluation_results, 'r') as f:
+                eval_results = json.load(f)
+            print("Evaluation results loaded successfully")
+            print(f"Keys found: {list(eval_results.keys())}")
+        except Exception as e:
+            print(f"Error reading evaluation results: {e}")
+            eval_results = {}
+        
+        with open(args.bearer_auth_token, 'r') as f:
+            bearer_auth_token = f.read().strip()
+        
+        with open(args.tenant_id, 'r') as f:
+            tenant_id = f.read().strip()
+
+        # Parse execution_id to int (primary key)
+        try:
+            execution_id_int = int(args.execution_id)
+        except (ValueError, TypeError):
+            print(f"Warning: execution_id '{args.execution_id}' is not a valid integer. Using 0.")
+            execution_id_int = 0
+
+        # Generate evaluation timestamp
+        evaluation_timestamp = int(time.time() * 1000)
+
+        # Helper function to safely get nested values
+        def safe_get(d, *keys, default=None):
+            for key in keys:
+                try:
+                    d = d[key]
+                except (KeyError, TypeError):
+                    return default
+            return d
+
+        # Helper function to safely convert to float
+        def safe_float(value, default=None):
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except:
+                return default
+
+        # Helper function to safely convert to int
+        def safe_int(value, default=None):
+            if value is None:
+                return default
+            try:
+                return int(value)
+            except:
+                return default
+
+        # Helper function to determine quality assessment
+        def determine_quality(silhouette_score):
+            if silhouette_score is None:
+                return "Unknown"
+            if silhouette_score > 0.7:
+                return "Excellent"
+            elif silhouette_score > 0.5:
+                return "Good"
+            elif silhouette_score > 0.25:
+                return "Fair"
+            else:
+                return "Poor"
+
+        print("")
+        print("Extracting evaluation metrics...")
+
+        # Extract core metrics from evaluation results
+        algorithm = eval_results.get('algorithm', 'Unknown')
+        dataset_name = eval_results.get('dataset', 'test')
+        
+        # Data shape
+        data_shape = eval_results.get('data_shape', {})
+        n_samples = safe_int(data_shape.get('n_samples'), 0)
+        n_features = safe_int(data_shape.get('n_features'), 0)
+        
+        # Basic statistics
+        basic_stats = eval_results.get('basic_statistics', {})
+        n_clusters = safe_int(basic_stats.get('n_clusters'), 0)
+        
+        # Internal metrics (top-level fields)
+        internal_metrics = eval_results.get('internal_metrics', {})
+        silhouette_score = safe_float(internal_metrics.get('silhouette_score'))
+        davies_bouldin_score = safe_float(internal_metrics.get('davies_bouldin_score'))
+        calinski_harabasz_score = safe_float(internal_metrics.get('calinski_harabasz_score'))
+        
+        # Cluster quality
+        cluster_quality = eval_results.get('cluster_quality', {})
+        separation_ratio = safe_float(cluster_quality.get('separation_ratio'))
+        
+        # External metrics (if available)
+        external_metrics = eval_results.get('external_metrics')
+        has_ground_truth = external_metrics is not None and external_metrics.get('available', False)
+        adjusted_rand_index = None
+        if has_ground_truth:
+            adjusted_rand_index = safe_float(external_metrics.get('adjusted_rand_index'))
+        
+        # Quality assessment
+        quality_assessment = determine_quality(silhouette_score)
+
+        print(f"  Algorithm: {algorithm}")
+        print(f"  Dataset: {dataset_name}")
+        print(f"  Samples: {n_samples}, Features: {n_features}, Clusters: {n_clusters}")
+        print(f"  Silhouette: {silhouette_score}")
+        print(f"  Davies-Bouldin: {davies_bouldin_score}")
+        print(f"  Separation Ratio: {separation_ratio}")
+        print(f"  Quality: {quality_assessment}")
+        print(f"  Has Ground Truth: {has_ground_truth}")
+
+        # Create detailed_metrics JSON with all secondary metrics
+        detailed_metrics = {
+            "basic_statistics": basic_stats,
+            "cluster_quality": cluster_quality,
+            "external_metrics": external_metrics,
+            "per_cluster_statistics": eval_results.get('per_cluster_statistics')
+        }
+
+        print("")
+        print("Building evaluation row...")
+
+        # Create evaluation schema row matching the schema definition
+        # Primary Key: ["evaluation_timestamp", "execution_id", "projectId"]
+        evaluation_row = {
+            # === PRIMARY KEYS (all required) ===
+            "evaluation_timestamp": evaluation_timestamp,  # number (PK)
+            "execution_id": execution_id_int,  # number (PK)
+            "projectId": args.project_id,  # string (PK)
+            "tenant_id": tenant_id,  # string (required)
+            
+            # === IDENTIFIERS ===
+            "model_id": args.model_id,  # string
+            "algorithm": algorithm,  # string
+            "dataset_name": dataset_name,  # string
+            
+            # === DATA DIMENSIONS ===
+            "n_samples": n_samples,  # number
+            "n_features": n_features,  # number
+            "n_clusters": n_clusters,  # number
+            
+            # === TOP-LEVEL METRICS (most important) ===
+            "silhouette_score": silhouette_score,  # float
+            "davies_bouldin_score": davies_bouldin_score,  # float
+            "calinski_harabasz_score": calinski_harabasz_score,  # float
+            "separation_ratio": separation_ratio,  # float
+            
+            # === EXTERNAL VALIDATION ===
+            "adjusted_rand_index": adjusted_rand_index,  # float
+            "has_ground_truth": has_ground_truth,  # boolean
+            
+            # === SUMMARY ===
+            "quality_assessment": quality_assessment,  # string
+            
+            # === DETAILED METRICS (JSON - everything else) ===
+            "detailed_metrics": detailed_metrics  # json
+        }
+
+        print("Evaluation row prepared:")
+        print(f"  evaluation_timestamp: {evaluation_row['evaluation_timestamp']} (type: {type(evaluation_row['evaluation_timestamp']).__name__})")
+        print(f"  execution_id: {evaluation_row['execution_id']} (type: {type(evaluation_row['execution_id']).__name__})")
+        print(f"  projectId: {evaluation_row['projectId']}")
+        print(f"  algorithm: {evaluation_row['algorithm']}")
+        print(f"  n_clusters: {evaluation_row['n_clusters']}")
+        print(f"  silhouette_score: {evaluation_row['silhouette_score']}")
+        print(f"  quality_assessment: {evaluation_row['quality_assessment']}")
+
+        # Set up API call
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {bearer_auth_token}'
+        }
+
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[408, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "PUT", "POST", "DELETE", "OPTIONS", "TRACE"],
+            backoff_factor=1
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        http = requests.Session()
+        http.mount("https://", adapter)
+        http.mount("http://", adapter)
+
+        # Check if row exists (using primary key)
+        check_url = f"{args.domain}/pi-entity-instances-service/v3.0/schemas/{args.schema_id}/instances/list"
+        check_payload = {
+            "dbType": "TIDB",
+            "ownedOnly": True,
+            "filter": {
+                "evaluation_timestamp": evaluation_timestamp,
+                "execution_id": execution_id_int,
+                "projectId": args.project_id
+            }
+        }
+
+        print("")
+        print(f"Checking for existing evaluation record...")
+        print(f"  evaluation_timestamp: {evaluation_timestamp}")
+        print(f"  execution_id: {execution_id_int}")
+        print(f"  projectId: {args.project_id}")
+        
+        try:
+            response = http.post(check_url, headers=headers, json=check_payload, timeout=60)
+            response.raise_for_status()
+            response_data = response.json()
+            
+            if response_data.get("content"):
+                print("Evaluation record found: Updating row")
+                update_url = f"{args.domain}/pi-entity-instances-service/v2.0/schemas/{args.schema_id}/instances"
+                update_payload = {
+                    "dbType": "TIDB",
+                    "conditionalFilter": {
+                        "conditions": [
+                            {"field": "evaluation_timestamp", "operator": "EQUAL", "value": evaluation_timestamp},
+                            {"field": "execution_id", "operator": "EQUAL", "value": execution_id_int},
+                            {"field": "projectId", "operator": "EQUAL", "value": args.project_id}
+                        ]
+                    },
+                    "partialUpdateRequests": [{
+                        "patch": [
+                            {"operation": "REPLACE", "path": "model_id", "value": evaluation_row["model_id"]},
+                            {"operation": "REPLACE", "path": "algorithm", "value": evaluation_row["algorithm"]},
+                            {"operation": "REPLACE", "path": "dataset_name", "value": evaluation_row["dataset_name"]},
+                            {"operation": "REPLACE", "path": "n_samples", "value": evaluation_row["n_samples"]},
+                            {"operation": "REPLACE", "path": "n_features", "value": evaluation_row["n_features"]},
+                            {"operation": "REPLACE", "path": "n_clusters", "value": evaluation_row["n_clusters"]},
+                            {"operation": "REPLACE", "path": "silhouette_score", "value": evaluation_row["silhouette_score"]},
+                            {"operation": "REPLACE", "path": "davies_bouldin_score", "value": evaluation_row["davies_bouldin_score"]},
+                            {"operation": "REPLACE", "path": "calinski_harabasz_score", "value": evaluation_row["calinski_harabasz_score"]},
+                            {"operation": "REPLACE", "path": "separation_ratio", "value": evaluation_row["separation_ratio"]},
+                            {"operation": "REPLACE", "path": "adjusted_rand_index", "value": evaluation_row["adjusted_rand_index"]},
+                            {"operation": "REPLACE", "path": "has_ground_truth", "value": evaluation_row["has_ground_truth"]},
+                            {"operation": "REPLACE", "path": "quality_assessment", "value": evaluation_row["quality_assessment"]},
+                            {"operation": "REPLACE", "path": "detailed_metrics", "value": evaluation_row["detailed_metrics"]}
+                        ]
+                    }]
+                }
+                
+                response = http.patch(update_url, headers=headers, json=update_payload, timeout=60)
+                response.raise_for_status()
+                print("Successfully updated evaluation record")
+            else:
+                print("No evaluation record found: Creating new row")
+                create_url = f"{args.domain}/pi-entity-instances-service/v2.0/schemas/{args.schema_id}/instances"
+                create_payload = {"data": [evaluation_row]}
+                
+                response = http.post(create_url, headers=headers, json=create_payload, timeout=60)
+                response.raise_for_status()
+                print("Successfully created new evaluation record")
+            
+            print(f"Response: {response.json()}")
+            
+            # Write success confirmation
+            with open(args.evaluation_schema_updated, 'w') as f:
+                json.dump({
+                    "status": "success",
+                    "message": "Evaluation schema updated successfully",
+                    "algorithm": algorithm,
+                    "quality": quality_assessment,
+                    "silhouette_score": silhouette_score
+                }, f)
+
+            print("")
+            print("="*80)
+            print("EVALUATION SCHEMA UPDATE COMPLETED")
+            print("="*80)
+            print(f"Algorithm: {algorithm}")
+            print(f"Quality: {quality_assessment}")
+            print(f"Silhouette Score: {silhouette_score}")
+            print("="*80)
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error: {e}")
+            if e.response is not None:
+                print(f"Response Status Code: {e.response.status_code}")
+                print(f"Response Content: {e.response.text}")
+            
+            # Write error confirmation
+            with open(args.evaluation_schema_updated, 'w') as f:
+                json.dump({
+                    "status": "error",
+                    "message": str(e),
+                    "row_data": evaluation_row
+                }, f)
+            exit(1)
+
+    args:
+      - --schema_id
+      - {inputValue: schema_id}
+      - --evaluation_results
+      - {inputPath: evaluation_results}
+      - --model_id
+      - {inputValue: model_id}
+      - --execution_id
+      - {inputValue: execution_id}
+      - --tenant_id
+      - {inputPath: tenant_id}
+      - --project_id
+      - {inputValue: project_id}
+      - --bearer_auth_token
+      - {inputPath: bearer_auth_token}
+      - --domain
+      - {inputValue: domain}
+      - --evaluation_schema_updated
+      - {outputPath: evaluation_schema_updated}
