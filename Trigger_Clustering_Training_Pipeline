@@ -10,6 +10,7 @@ inputs:
   # Authentication
   - {name: bearer_token, type: String, description: "Bearer token file"}
   - {name: domain, type: String, description: "API domain"}
+  - {name: get_cdn, type: String, description: "Public CDN base domain"}
   
   # Pipeline parameters
   - {name: next_pipeline_id, type: String, description: "Training pipeline ID to trigger"}
@@ -40,7 +41,6 @@ inputs:
   - {name: password, type: String}
   - {name: productId, type: String}
   - {name: requestType, type: String}
-  - {name: get_cdn, type: String}
   - {name: model_name, type: String}
 
 outputs:
@@ -51,6 +51,13 @@ implementation:
   container:
     image: nikhilv215/nesy-factory:v23
     command:
+      - sh
+      - -ec
+      - |
+        if ! command -v curl >/dev/null 2>&1; then
+          apt-get update >/dev/null && apt-get install -y curl >/dev/null
+        fi
+        exec "$0" "$@"
       - python3
       - -u
       - -c
@@ -60,6 +67,8 @@ implementation:
         import json
         import os
         import time
+        import tempfile
+        import pickle
 
         parser = argparse.ArgumentParser()
         
@@ -71,6 +80,7 @@ implementation:
         # Auth
         parser.add_argument('--bearer_token', required=True)
         parser.add_argument('--domain', required=True)
+        parser.add_argument('--get_cdn', required=True)
         
         # Pipeline params
         parser.add_argument('--next_pipeline_id', required=True)
@@ -101,7 +111,6 @@ implementation:
         parser.add_argument('--password', required=True)
         parser.add_argument('--productId', required=True)
         parser.add_argument('--requestType', required=True)
-        parser.add_argument('--get_cdn', required=True)
         parser.add_argument('--model_name', required=True)
         
         # Outputs
@@ -119,12 +128,18 @@ implementation:
             bearer_token = f.read().strip()
 
         # Helper to read CDN URLs from files
-        def read_cdn_url(file_path):
+        def read_cdn_url_from_file(file_path):
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"CDN URL file not found: {file_path}")
             with open(file_path, 'r') as f:
-                return f.read().strip()
+                cdn_url = f.read().strip()
+            print(f"Read from {os.path.basename(file_path)}: {cdn_url[:80]}...")
+            return cdn_url
 
         # Helper to encode URLs
         def encode_cdn_url(url):
+            if not url:
+                return url
             url = url.replace(" ", "")
             url = url.replace("$", "%24")
             url = url.replace("(", "%28")
@@ -135,18 +150,129 @@ implementation:
             url = url.replace("}", "%7D")
             return url
 
-        # Read CDN URLs
-        print("\n[STEP 1] Reading CDN URLs...")
-        train_data_cdn = encode_cdn_url(read_cdn_url(args.train_data_cdn_url))
-        test_data_cdn = encode_cdn_url(read_cdn_url(args.test_data_cdn_url))
-        test_ground_truth_cdn = encode_cdn_url(read_cdn_url(args.test_ground_truth_cdn_url))
+        # ============================================================
+        # STEP 1: Read CDN URLs from preprocessing output files
+        # ============================================================
+        print("\n[STEP 1] Reading CDN URLs from preprocessing output files...")
+        
+        cdn_urls = {}
+        cdn_urls["train_data_cdn"] = encode_cdn_url(read_cdn_url_from_file(args.train_data_cdn_url))
+        cdn_urls["test_data_cdn"] = encode_cdn_url(read_cdn_url_from_file(args.test_data_cdn_url))
+        cdn_urls["test_ground_truth_cdn"] = encode_cdn_url(read_cdn_url_from_file(args.test_ground_truth_cdn_url))
 
-        print(f"Train data CDN: {train_data_cdn[:80]}...")
-        print(f"Test data CDN: {test_data_cdn[:80]}...")
-        print(f"Test ground truth CDN: {test_ground_truth_cdn[:80]}...")
+        print(f"Read {len(cdn_urls)} CDN URLs from preprocessing files")
 
-        # Build trigger payload
-        print("\n[STEP 2] Building trigger payload...")
+        # ============================================================
+        # STEP 2: Create combined metadata pickle and upload to CDN
+        # ============================================================
+        print("\n[STEP 2] Creating combined metadata pickle and uploading it...")
+        
+        # Function to upload file to CDN
+        def upload_to_cdn(file_path, file_name=None):
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File not found: {file_path}")
+            
+            upload_url = f"{args.domain}/mobius-content-service/v1.0/content/upload?filePathAccess=private&filePath=%2Fbottle%2Flimka%2Fsoda%2F"
+            
+            if file_name:
+                cmd = [
+                    "curl",
+                    "--location", upload_url,
+                    "--header", f"Authorization: Bearer {bearer_token}",
+                    "--form", f"file=@{file_path};filename={file_name}",
+                    "--fail",
+                    "--show-error",
+                    "--silent"
+                ]
+            else:
+                cmd = [
+                    "curl",
+                    "--location", upload_url,
+                    "--header", f"Authorization: Bearer {bearer_token}",
+                    "--form", f"file=@{file_path}",
+                    "--fail",
+                    "--show-error",
+                    "--silent"
+                ]
+            
+            print(f"Uploading: {file_name or os.path.basename(file_path)} ({os.path.getsize(file_path)} bytes)")
+            
+            result = subprocess.run(cmd, capture_output=True, check=True, text=True)
+            response = json.loads(result.stdout)
+            
+            relative_url = response.get("cdnUrl")
+            if not relative_url:
+                raise RuntimeError(f"cdnUrl missing in response: {response}")
+            
+            full_url = f"{args.get_cdn}{relative_url}"
+            encoded_url = encode_cdn_url(full_url)
+            
+            return encoded_url
+        
+        # Create combined clustering metadata (for backward compatibility and easy reference)
+        combined_metadata = {
+            "cdn_urls": {
+                "train_data": cdn_urls["train_data_cdn"],
+                "test_data": cdn_urls["test_data_cdn"],
+                "test_ground_truth": cdn_urls["test_ground_truth_cdn"]
+            },
+            "clustering_config": {
+                "algorithm": args.training_algorithm,
+                "params": json.loads(args.training_algo_params),
+                "auto_tune": args.auto_tune,
+                "training_mode": args.training_mode,
+                "inference_mode": args.inference_mode
+            },
+            "validation": {
+                "thresholds": json.loads(args.thresholds),
+                "version_strategy": args.version_strategy
+            },
+            "dataset_info": {
+                "dataset_name": args.dataset_name,
+                "per_cluster": args.per_cluster
+            },
+            "execution_info": {
+                "model_id": args.model_id,
+                "execution_id": args.execution_id,
+                "project_id": args.project_id,
+                "experiment_id": args.experiment_id
+            }
+        }
+        
+        # Save and upload combined metadata pickle
+        combined_pickle = tempfile.NamedTemporaryFile(suffix='.pkl', delete=False)
+        pickle.dump(combined_metadata, combined_pickle)
+        combined_pickle.close()
+        
+        cdn_urls["combined_metadata_cdn"] = upload_to_cdn(combined_pickle.name, "clustering_combined_metadata.pkl")
+        os.unlink(combined_pickle.name)
+        
+        print(f"✅ Combined metadata uploaded: {cdn_urls['combined_metadata_cdn'][:80]}...")
+        
+        # Create config JSON and upload (for easy reference)
+        config_data = {
+            "algorithm": args.training_algorithm,
+            "params": json.loads(args.training_algo_params),
+            "thresholds": json.loads(args.thresholds),
+            "training_mode": args.training_mode,
+            "inference_mode": args.inference_mode,
+            "auto_tune": args.auto_tune
+        }
+        
+        config_pickle = tempfile.NamedTemporaryFile(suffix='.json', delete=False)
+        with open(config_pickle.name, 'w') as f:
+            json.dump(config_data, f, indent=2)
+        
+        cdn_urls["config_json_cdn"] = upload_to_cdn(config_pickle.name, "clustering_config.json")
+        os.unlink(config_pickle.name)
+        
+        print(f"✅ Config JSON uploaded: {cdn_urls['config_json_cdn'][:80]}...")
+        print("[STEP 2 COMPLETE] Created and uploaded combined metadata and config")
+
+        # ============================================================
+        # STEP 3: Trigger the clustering training pipeline
+        # ============================================================
+        print("\n[STEP 3] Triggering clustering training pipeline...")
         
         trigger_url = f"{args.domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={args.next_pipeline_id}"
         
@@ -157,9 +283,13 @@ implementation:
             "enableCaching": True,
             "parameters": {
                 # CDN URLs (will be downloaded by next pipeline)
-                "train_data_cdn_url": train_data_cdn,
-                "test_data_cdn_url": test_data_cdn,
-                "test_ground_truth_cdn_url": test_ground_truth_cdn,
+                "train_data_cdn_url": cdn_urls["train_data_cdn"],
+                "test_data_cdn_url": cdn_urls["test_data_cdn"],
+                "test_ground_truth_cdn_url": cdn_urls["test_ground_truth_cdn"],
+                
+                # Additional metadata URLs (optional, for reference)
+                "combined_metadata_cdn": cdn_urls["combined_metadata_cdn"],
+                "config_json_cdn": cdn_urls["config_json_cdn"],
                 
                 # Clustering config
                 "training_algorithm": args.training_algorithm,
@@ -208,9 +338,11 @@ implementation:
         print(json.dumps(payload, indent=2))
         print("="*80)
 
+        print(f"Trigger URL: {trigger_url}")
+        print(f"Pipeline ID: {args.next_pipeline_id}")
+        print(f"Experiment ID: {args.experiment_id}")
+
         # Make trigger request
-        print("\n[STEP 3] Triggering training pipeline...")
-        
         headers = {
             "accept": "application/json",
             "Authorization": f"Bearer {bearer_token}",
@@ -230,6 +362,7 @@ implementation:
             "--silent"
         ]
         
+        print("Sending trigger request...")
         retries = 3
         for i in range(retries):
             try:
@@ -265,17 +398,18 @@ implementation:
                 else:
                     raise
 
-        # Save CDN URLs JSON
+        # ============================================================
+        # STEP 4: Save CDN URLs and metadata JSON
+        # ============================================================
         print("\n[STEP 4] Saving CDN info...")
         cdn_info = {
             "timestamp": int(time.time()),
             "pipeline_id": args.next_pipeline_id,
             "experiment_id": args.experiment_id,
-            "cdn_urls": {
-                "train_data_cdn": train_data_cdn,
-                "test_data_cdn": test_data_cdn,
-                "test_ground_truth_cdn": test_ground_truth_cdn
-            },
+            "model_id": args.model_id,
+            "execution_id": args.execution_id,
+            "project_id": args.project_id,
+            "cdn_urls": cdn_urls,
             "trigger_payload": payload
         }
         
@@ -286,8 +420,11 @@ implementation:
         print("\n" + "="*80)
         print("✅ TRAINING PIPELINE TRIGGERED SUCCESSFULLY")
         print("="*80)
-        print(f"Next pipeline ID: {args.next_pipeline_id}")
+        print(f"Processed {len(cdn_urls)} CDN URLs:")
+        for key, url in cdn_urls.items():
+            print(f"  {key}: {url[:80]}...")
         print(f"Trigger response: {args.trigger_response}")
+        print(f"CDN URLs JSON: {args.cdn_urls_json}")
         print("="*80)
 
     args:
@@ -301,6 +438,8 @@ implementation:
       - {inputPath: bearer_token}
       - --domain
       - {inputValue: domain}
+      - --get_cdn
+      - {inputValue: get_cdn}
       - --next_pipeline_id
       - {inputValue: next_pipeline_id}
       - --experiment_id
@@ -345,8 +484,6 @@ implementation:
       - {inputValue: productId}
       - --requestType
       - {inputValue: requestType}
-      - --get_cdn
-      - {inputValue: get_cdn}
       - --model_name
       - {inputValue: model_name}
       - --trigger_response
