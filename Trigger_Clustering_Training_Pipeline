@@ -246,18 +246,12 @@ implementation:
         print(f"Experiment ID: {args.experiment_id}")
         
         # Make the request
-        headers = {
-            "accept": "application/json",
-            "Authorization": f"Bearer {bearer_token}",
-            "Content-Type": "application/json"
-        }
-        
         curl_command = [
             "curl",
             "--location", trigger_url,
-            "--header", f"accept: {headers['accept']}",
-            "--header", f"Authorization: {headers['Authorization']}",
-            "--header", f"Content-Type: {headers['Content-Type']}",
+            "--header", "accept: application/json",
+            "--header", f"Authorization: Bearer {bearer_token}",
+            "--header", "Content-Type: application/json",
             "--data", json.dumps(payload),
             "--fail",
             "--show-error",
@@ -265,7 +259,8 @@ implementation:
             "--silent"
         ]
         
-        print("\nSending trigger request...")
+        print("")
+        print("Sending trigger request...")
         retries = 3
         for i in range(retries):
             try:
@@ -303,7 +298,8 @@ implementation:
                     raise
         
         # Step 3: Save CDN URLs JSON
-        print("\n[STEP 3] Saving CDN URLs...")
+        print("")
+        print("[STEP 3] Saving CDN URLs...")
         cdn_info = {
             "timestamp": int(time.time()),
             "pipeline_id": args.next_pipeline_id,
