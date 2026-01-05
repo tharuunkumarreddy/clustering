@@ -6,7 +6,7 @@ inputs:
     type: String
     description: "The ID of the inference schema to update"
   - name: predictions
-    type: Data
+    type: Data  # ✅ CORRECT TYPE - matches inference output
     description: "Predictions JSON from clustering inference component"
   - name: model_id
     type: String
@@ -43,13 +43,15 @@ implementation:
         import json
         import argparse
         import requests
+        import time
+        from datetime import datetime
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
         import os
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--schema_id', type=str, required=True)
-        parser.add_argument('--predictions', type=str, required=True)
+        parser.add_argument('--predictions', type=str, required=True)  # File path
         parser.add_argument('--model_id', type=str, required=True)
         parser.add_argument('--execution_id', type=str, required=True)
         parser.add_argument('--tenant_id', type=str, required=True)
@@ -72,13 +74,16 @@ implementation:
         print("")
         print("Loading inputs...")
         
+        # ✅ Read predictions as FILE (type: Data)
         with open(args.predictions, 'r') as f:
             result = json.load(f)
         print("Predictions loaded successfully")
         
+        # ✅ Read bearer token as FILE
         with open(args.bearer_auth_token, 'r') as f:
             bearer_auth_token = f.read().strip()
         
+        # ✅ Read tenant_id as FILE
         with open(args.tenant_id, 'r') as f:
             tenant_id = f.read().strip()
 
@@ -89,6 +94,9 @@ implementation:
             print(f"Warning: execution_id '{args.execution_id}' is not a valid integer. Using 0.")
             execution_id_int = 0
 
+        # Generate unique inference ID (timestamp-based)
+        inference_id = f"inf_{int(time.time() * 1000)}"
+
         # Extract data from predictions
         model_info = result.get('model_info', {})
         predictions_data = result.get('predictions', {})
@@ -96,64 +104,92 @@ implementation:
         
         algorithm = model_info.get('algorithm', 'Unknown')
         model_version = model_info.get('model_version', 'unknown')
+        n_clusters = model_info.get('n_clusters', 0)
         n_samples = predictions_data.get('n_samples', 0)
         input_type = predictions_data.get('input_type', 'unknown')
         cluster_labels = predictions_data.get('cluster_labels', [])
         
-        # Quality metrics
+        # Quality evaluation (may be absent for single samples)
+        quality_evaluated = quality_eval.get('evaluated', False)
+        evaluation_note = quality_eval.get('note', '')
+        
+        # Extract metrics (if available)
         internal_metrics = quality_eval.get('internal_metrics', {})
         quality_assessment = quality_eval.get('quality_assessment', {})
         cluster_distribution = quality_eval.get('cluster_distribution', {})
         
         silhouette = internal_metrics.get('silhouette_score')
-        overall_quality = quality_assessment.get('overall_quality', 'Unknown')
+        davies_bouldin = internal_metrics.get('davies_bouldin_score')
+        calinski_harabasz = internal_metrics.get('calinski_harabasz_score')
+        separation_ratio = internal_metrics.get('separation_ratio')
+        overall_quality = quality_assessment.get('overall_quality', 'N/A')
+
+        # Convert timestamp
+        timestamp_str = result.get('timestamp', datetime.now().isoformat())
+        try:
+            inference_timestamp = int(datetime.fromisoformat(timestamp_str).timestamp() * 1000)
+        except:
+            inference_timestamp = int(time.time() * 1000)
 
         print(f"  Algorithm: {algorithm}")
         print(f"  Samples: {n_samples}")
-        print(f"  Quality: {overall_quality}")
+        print(f"  Input Type: {input_type}")
+        print(f"  Quality Evaluated: {quality_evaluated}")
+        if quality_evaluated:
+            print(f"  Overall Quality: {overall_quality}")
 
-        # Create inference row - mapping to existing schema
+        # Helper function for safe float conversion
+        def safe_float(value):
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except:
+                return None
+
+        # Create inference row
         inference_row = {
             # === PRIMARY KEYS ===
+            "inference_id": inference_id,
             "execution_id": execution_id_int,
-            "model_id": args.model_id,
             "projectId": args.project_id,
+            "model_id": args.model_id,
             "tenant_id": tenant_id,
             
             # === MODEL INFO ===
-            "ModelName": algorithm,
-            "architecture_type": "clustering",
+            "algorithm": algorithm,
+            "model_version": model_version,
+            "n_clusters": n_clusters,
+            
+            # === INFERENCE INFO ===
             "total_samples": n_samples,
+            "input_type": input_type,
             
-            # === INPUT (as JSON string in longtext) ===
-            "infernce_input": json.dumps({
-                "input_type": input_type,
-                "n_samples": n_samples
-            }),
+            # === PREDICTIONS ===
+            "cluster_labels": cluster_labels,  # JSON array
+            "cluster_distribution": cluster_distribution if cluster_distribution else {},  # JSON object
             
-            # === OUTPUT (predictions as JSON string in longtext) ===
-            "infernce_output": json.dumps({
-                "cluster_labels": cluster_labels,
-                "cluster_distribution": cluster_distribution,
-                "quality_evaluation": quality_eval,
-                "timestamp": result.get('timestamp')
-            }),
+            # === QUALITY METRICS (may be None) ===
+            "silhouette_score": safe_float(silhouette),
+            "davies_bouldin_score": safe_float(davies_bouldin),
+            "calinski_harabasz_score": safe_float(calinski_harabasz),
+            "separation_ratio": safe_float(separation_ratio),
+            "overall_quality": overall_quality if quality_evaluated else "Not Evaluated",
             
-            # === REPURPOSE EXISTING FIELDS ===
-            "predicted_class": overall_quality,  # Store quality as "class"
-            "inference_confidence": silhouette if silhouette else 0.0,  # Map silhouette to confidence
+            # === EVALUATION STATUS ===
+            "quality_evaluated": quality_evaluated,
+            "evaluation_note": evaluation_note,
             
-            # === NOT USED (set to None or 0) ===
-            "infernce_score_blue": 0,
-            "inference_score_rouge": 0
+            # === TIMESTAMP ===
+            "inference_timestamp": inference_timestamp
         }
 
         print("")
         print("Inference row prepared:")
-        print(f"  algorithm: {inference_row['ModelName']}")
+        print(f"  inference_id: {inference_row['inference_id']}")
+        print(f"  algorithm: {inference_row['algorithm']}")
         print(f"  total_samples: {inference_row['total_samples']}")
-        print(f"  overall_quality: {inference_row['predicted_class']}")
-        print(f"  silhouette (as confidence): {inference_row['inference_confidence']}")
+        print(f"  quality_evaluated: {inference_row['quality_evaluated']}")
 
         # Set up API call
         headers = {
@@ -172,14 +208,14 @@ implementation:
         http.mount("https://", adapter)
         http.mount("http://", adapter)
 
-        # Check if row exists
+        # Check if row exists (using primary key)
         check_url = f"{args.domain}/pi-entity-instances-service/v3.0/schemas/{args.schema_id}/instances/list"
         check_payload = {
             "dbType": "TIDB",
             "ownedOnly": True,
             "filter": {
+                "inference_id": inference_id,
                 "execution_id": execution_id_int,
-                "model_id": args.model_id,
                 "projectId": args.project_id
             }
         }
@@ -192,6 +228,8 @@ implementation:
             response.raise_for_status()
             response_data = response.json()
             
+            # Since inference_id is timestamp-based, it should always be new
+            # But we check anyway
             if response_data.get("content"):
                 print("Inference record found: Updating row")
                 update_url = f"{args.domain}/pi-entity-instances-service/v2.0/schemas/{args.schema_id}/instances"
@@ -199,22 +237,17 @@ implementation:
                     "dbType": "TIDB",
                     "conditionalFilter": {
                         "conditions": [
+                            {"field": "inference_id", "operator": "EQUAL", "value": inference_id},
                             {"field": "execution_id", "operator": "EQUAL", "value": execution_id_int},
-                            {"field": "model_id", "operator": "EQUAL", "value": args.model_id},
                             {"field": "projectId", "operator": "EQUAL", "value": args.project_id}
                         ]
                     },
                     "partialUpdateRequests": [{
                         "patch": [
-                            {"operation": "REPLACE", "path": "ModelName", "value": inference_row["ModelName"]},
-                            {"operation": "REPLACE", "path": "architecture_type", "value": inference_row["architecture_type"]},
+                            {"operation": "REPLACE", "path": "algorithm", "value": inference_row["algorithm"]},
                             {"operation": "REPLACE", "path": "total_samples", "value": inference_row["total_samples"]},
-                            {"operation": "REPLACE", "path": "infernce_input", "value": inference_row["infernce_input"]},
-                            {"operation": "REPLACE", "path": "infernce_output", "value": inference_row["infernce_output"]},
-                            {"operation": "REPLACE", "path": "predicted_class", "value": inference_row["predicted_class"]},
-                            {"operation": "REPLACE", "path": "inference_confidence", "value": inference_row["inference_confidence"]},
-                            {"operation": "REPLACE", "path": "infernce_score_blue", "value": inference_row["infernce_score_blue"]},
-                            {"operation": "REPLACE", "path": "inference_score_rouge", "value": inference_row["inference_score_rouge"]}
+                            {"operation": "REPLACE", "path": "cluster_labels", "value": inference_row["cluster_labels"]},
+                            {"operation": "REPLACE", "path": "overall_quality", "value": inference_row["overall_quality"]}
                         ]
                     }]
                 }
@@ -238,6 +271,7 @@ implementation:
                 json.dump({
                     "status": "success",
                     "message": "Inference schema updated successfully",
+                    "inference_id": inference_id,
                     "algorithm": algorithm,
                     "samples": n_samples
                 }, f)
@@ -265,17 +299,17 @@ implementation:
       - --schema_id
       - {inputValue: schema_id}
       - --predictions
-      - {inputPath: predictions}
+      - {inputPath: predictions}  # ✅ CRITICAL: Must be inputPath (not inputValue)
       - --model_id
       - {inputValue: model_id}
       - --execution_id
       - {inputValue: execution_id}
       - --tenant_id
-      - {inputPath: tenant_id}
+      - {inputPath: tenant_id}  # ✅ inputPath
       - --project_id
       - {inputValue: project_id}
       - --bearer_auth_token
-      - {inputPath: bearer_auth_token}
+      - {inputPath: bearer_auth_token}  # ✅ inputPath
       - --domain
       - {inputValue: domain}
       - --inference_schema_updated
