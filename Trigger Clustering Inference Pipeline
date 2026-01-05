@@ -1,0 +1,313 @@
+name: Trigger Clustering Inference Pipeline
+description: Reads model CDN URLs from training and triggers clustering inference pipeline
+
+inputs:
+  # Model CDN URLs from Upload brick (as FILES)
+  - {name: model_cdn_url, type: String, description: "File containing model CDN URL"}
+  - {name: metadata_cdn_url, type: String, description: "File containing metadata CDN URL"}
+  
+  # Authentication and configuration
+  - {name: bearer_token, type: String, description: "Bearer token for authentication"}
+  - {name: domain, type: String, description: "Domain for API endpoint"}
+  
+  # Pipeline trigger parameters
+  - {name: inference_pipeline_id, type: String, description: "Pipeline ID to trigger (Clustering_production_inference)"}
+  - {name: experiment_id, type: String, description: "Experiment ID"}
+  - {name: model_id, type: String, description: "Model ID"}
+  - {name: project_id, type: String, description: "Project ID"}
+  - {name: execution_id, type: String, description: "Execution ID"}
+  
+  # Inference configuration
+  - {name: input_data, type: String, description: "Input data JSON for inference"}
+  - {name: evaluate, type: String, default: "true", description: "Whether to evaluate predictions"}
+  
+  # Additional parameters
+  - {name: userName, type: String, description: "Username for IAM authentication"}
+  - {name: password, type: String, description: "Password for IAM authentication"}
+  - {name: requesttype, type: String, description: "Request type for IAM authentication"}
+  - {name: productid, type: String, description: "Product ID for IAM authentication"}
+  - {name: infer_schema_id, type: String, description: "Schema ID for inference metrics"}
+
+outputs:
+  - {name: trigger_response, type: String, description: "Raw response from pipeline trigger API"}
+  - {name: model_urls_json, type: String, description: "JSON with model CDN URLs passed to inference"}
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - sh
+      - -ec
+      - |
+        if ! command -v curl >/dev/null 2>&1; then
+          apt-get update >/dev/null && apt-get install -y curl >/dev/null
+        fi
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import subprocess
+        import json
+        import os
+        import time
+
+        parser = argparse.ArgumentParser()
+
+        # Inputs - Model URLs as FILE PATHS
+        parser.add_argument('--model_cdn_url', required=True)
+        parser.add_argument('--metadata_cdn_url', required=True)
+        
+        # Authentication
+        parser.add_argument('--bearer_token', required=True)
+        parser.add_argument('--domain', required=True)
+        
+        # Pipeline parameters
+        parser.add_argument('--inference_pipeline_id', required=True)
+        parser.add_argument('--experiment_id', required=True)
+        parser.add_argument('--model_id', required=True)
+        parser.add_argument('--project_id', required=True)
+        parser.add_argument('--execution_id', required=True)
+        
+        # Inference configuration
+        parser.add_argument('--input_data', required=True)
+        parser.add_argument('--evaluate', default='true')
+        
+        # Additional parameters
+        parser.add_argument('--userName', required=True)
+        parser.add_argument('--password', required=True)
+        parser.add_argument('--requesttype', required=True)
+        parser.add_argument('--productid', required=True)
+        parser.add_argument('--infer_schema_id', required=True)
+        
+        # Outputs
+        parser.add_argument('--trigger_response', required=True)
+        parser.add_argument('--model_urls_json', required=True)
+
+        args = parser.parse_args()
+
+        # Read bearer token
+        with open(args.bearer_token, "r") as f:
+            bearer_token = f.read().strip()
+
+        print("="*80)
+        print("TRIGGER CLUSTERING INFERENCE PIPELINE")
+        print("="*80)
+
+        # Function to read CDN URL from file
+        def read_cdn_url_from_file(file_path):
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"CDN URL file not found: {file_path}")
+            
+            with open(file_path, "r") as f:
+                cdn_url = f.read().strip()
+            
+            print(f"Read from {os.path.basename(file_path)}: {cdn_url[:80]}...")
+            return cdn_url
+
+        # Function to encode URLs
+        def encode_cdn_url(url):
+            if not url:
+                return url
+            
+            url = url.replace(" ", "")
+            url = url.replace("$", "%24")
+            url = url.replace("(", "%28")
+            url = url.replace(")", "%29")
+            url = url.replace("[", "%5B")
+            url = url.replace("]", "%5D")
+            url = url.replace("{", "%7B")
+            url = url.replace("}", "%7D")
+            
+            return url
+
+        # Step 1: Read model CDN URLs from files
+        print("")
+        print("[STEP 1] Reading model CDN URLs from training upload...")
+        
+        model_urls = {}
+        model_urls["model_cdn"] = encode_cdn_url(read_cdn_url_from_file(args.model_cdn_url))
+        model_urls["metadata_cdn"] = encode_cdn_url(read_cdn_url_from_file(args.metadata_cdn_url))
+        
+        print(f"Read {len(model_urls)} model CDN URLs from training")
+        
+        # Step 2: Trigger the inference pipeline
+        print("")
+        print("[STEP 2] Triggering clustering inference pipeline...")
+        
+        trigger_url = f"{args.domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={args.inference_pipeline_id}"
+        
+        # Build payload
+        payload = {
+            "pipelineType": "ML",
+            "containerResources": {},
+            "experimentId": args.experiment_id,
+            "enableCaching": True,
+            "parameters": {
+                # Model CDN URLs - downloaded by CDN Downloader in inference pipeline
+                "train_model_cdn_url": model_urls["model_cdn"],
+                "train_metadata_cdn_url": model_urls["metadata_cdn"],
+                
+                # Inference configuration
+                "input_data": args.input_data,
+                "evaluate": args.evaluate,
+                
+                # IDs
+                "execution_id": args.execution_id,
+                "model_id": args.model_id,
+                "project_id": args.project_id,
+                
+                # Authentication
+                "userName": args.userName,
+                "password": args.password,
+                "requestType": args.requesttype,
+                "productId": args.productid,
+                "domine": args.domain,
+                
+                # Schema ID
+                "infer_schema_id": args.infer_schema_id
+            },
+            "version": 1
+        }
+
+        print("")
+        print("="*80)
+        print("PAYLOAD FOR MANUAL TRIGGER:")
+        print("="*80)
+        print(json.dumps(payload, indent=2))
+        print("="*80)
+
+        print("")
+        print(f"Trigger URL: {trigger_url}")
+        print(f"Pipeline ID: {args.inference_pipeline_id}")
+        print(f"Experiment ID: {args.experiment_id}")
+        
+        # Make the request
+        curl_command = [
+            "curl",
+            "--location", trigger_url,
+            "--header", "accept: application/json",
+            "--header", f"Authorization: Bearer {bearer_token}",
+            "--header", "Content-Type: application/json",
+            "--data", json.dumps(payload),
+            "--fail",
+            "--show-error",
+            "--connect-timeout", "30",
+            "--silent"
+        ]
+        
+        print("")
+        print("Sending trigger request...")
+        retries = 3
+        for i in range(retries):
+            try:
+                process = subprocess.run(
+                    curl_command,
+                    capture_output=True,
+                    check=True,
+                    text=True
+                )
+                
+                print("Trigger successful!")
+                response_text = process.stdout
+                
+                # Save trigger response
+                os.makedirs(os.path.dirname(args.trigger_response), exist_ok=True)
+                with open(args.trigger_response, "w") as f:
+                    f.write(response_text)
+                
+                # Parse and print response
+                try:
+                    response_json = json.loads(response_text)
+                    print(f"Response: {json.dumps(response_json, indent=2)}")
+                except:
+                    print(f"Raw response: {response_text}")
+                
+                break
+                
+            except subprocess.CalledProcessError as e:
+                print(f"Attempt {i+1} failed: {e.returncode}")
+                print(f"Error: {e.stderr}")
+                if i < retries - 1:
+                    print(f"Retrying in 10 seconds...")
+                    time.sleep(10)
+                else:
+                    raise
+        
+        # Step 3: Save model URLs JSON
+        print("")
+        print("[STEP 3] Saving model URLs...")
+        model_info = {
+            "timestamp": int(time.time()),
+            "pipeline_id": args.inference_pipeline_id,
+            "experiment_id": args.experiment_id,
+            "model_id": args.model_id,
+            "execution_id": args.execution_id,
+            "project_id": args.project_id,
+            "model_urls": model_urls,
+            "trigger_payload": payload
+        }
+        
+        os.makedirs(os.path.dirname(args.model_urls_json), exist_ok=True)
+        with open(args.model_urls_json, "w") as f:
+            json.dump(model_info, f, indent=2)
+        
+        print("="*80)
+        print("TRIGGER PROCESS COMPLETE")
+        print("="*80)
+        print(f"Processed {len(model_urls)} model CDN URLs:")
+        for key, url in model_urls.items():
+            print(f"  {key}: {url[:80]}...")
+        print(f"Trigger response saved to: {args.trigger_response}")
+        print(f"Model URLs saved to: {args.model_urls_json}")
+        print("="*80)
+            
+    args:
+      # Model URLs - file paths
+      - --model_cdn_url
+      - {inputPath: model_cdn_url}
+      - --metadata_cdn_url
+      - {inputPath: metadata_cdn_url}
+      
+      # Authentication
+      - --bearer_token
+      - {inputPath: bearer_token}
+      - --domain
+      - {inputValue: domain}
+      
+      # Pipeline parameters
+      - --inference_pipeline_id
+      - {inputValue: inference_pipeline_id}
+      - --experiment_id
+      - {inputValue: experiment_id}
+      - --model_id
+      - {inputValue: model_id}
+      - --project_id
+      - {inputValue: project_id}
+      - --execution_id
+      - {inputValue: execution_id}
+      
+      # Inference configuration
+      - --input_data
+      - {inputValue: input_data}
+      - --evaluate
+      - {inputValue: evaluate}
+      
+      # Additional parameters
+      - --userName
+      - {inputValue: userName}
+      - --password
+      - {inputValue: password}
+      - --requesttype
+      - {inputValue: requesttype}
+      - --productid
+      - {inputValue: productid}
+      - --infer_schema_id
+      - {inputValue: infer_schema_id}
+      
+      # Outputs
+      - --trigger_response
+      - {outputPath: trigger_response}
+      - --model_urls_json
+      - {outputPath: model_urls_json}
