@@ -159,7 +159,8 @@ implementation:
             return url
 
         # Step 1: Read CDN URLs from files
-        print("\n[STEP 1] Reading CDN URLs from preprocessing upload...")
+        print("")
+        print("[STEP 1] Reading CDN URLs from preprocessing upload...")
         
         cdn_urls = {}
         cdn_urls["train_data_cdn"] = encode_cdn_url(read_cdn_url_from_file(args.train_data_cdn_url))
@@ -169,7 +170,8 @@ implementation:
         print(f"Read {len(cdn_urls)} CDN URLs from preprocessing")
         
         # Step 2: Trigger the training pipeline
-        print("\n[STEP 2] Triggering clustering training pipeline...")
+        print("")
+        print("[STEP 2] Triggering clustering training pipeline...")
         print("Note: Unlike XGBoost, clustering doesn't need combined pickle - passing URLs directly")
         
         trigger_url = f"{args.domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={args.next_pipeline_id}"
