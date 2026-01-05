@@ -6,7 +6,7 @@ inputs:
     type: String
     description: "The ID of the training schema to update"
   - name: training_metadata
-    type: String
+    type: Data
     description: "Training metadata JSON from clustering training component"
   - name: model_id
     type: String
@@ -50,7 +50,7 @@ implementation:
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--schema_id', type=str, required=True)
-        parser.add_argument('--training_metadata', type=str, required=True)
+        parser.add_argument('--training_metadata', type=str, required=True)  # ✅ Now reads as file path
         parser.add_argument('--model_id', type=str, required=True)
         parser.add_argument('--execution_id', type=str, required=True)
         parser.add_argument('--tenant_id', type=str, required=True)
@@ -73,6 +73,7 @@ implementation:
         print("")
         print("Loading inputs...")
         
+        # ✅ FIXED: Read training_metadata as FILE (not string)
         with open(args.training_metadata, 'r') as f:
             metadata = json.load(f)
         print("Training metadata loaded")
@@ -132,14 +133,14 @@ implementation:
             "execution_id": execution_id_int,
             "projectId": args.project_id,
             "model_id": args.model_id,
-            "epoch": 1,  # Clustering is not iterative
-            "loss": 0.0,  # Placeholder (no test metrics yet)
-            "accuracy": 0.0,  # Placeholder (no test metrics yet)
-            "validation_loss": 0.0,  # Placeholder
-            "validation_accuracy": 0.0,  # Placeholder
+            "epoch": 1,
+            "loss": 0.0,
+            "accuracy": 0.0,
+            "validation_loss": 0.0,
+            "validation_accuracy": 0.0,
             "tenant_id": tenant_id,
             "timestamp": int(time.time() * 1000),
-            "training_mode": category,  # Use category as training mode
+            "training_mode": category,
             "custom_metrics": custom_metrics_dict
         }
 
