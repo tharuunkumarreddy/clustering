@@ -6,7 +6,7 @@ inputs:
     type: String
     description: "The ID of the clustering evaluation schema to update"
   - name: evaluation_results
-    type: String
+    type: Data
     description: "Evaluation results JSON from clustering evaluation component"
   - name: model_id
     type: String
