@@ -1,0 +1,274 @@
+name: Clustering Training Schema Updater
+description: Updates the training schema with clustering training metadata
+
+inputs:
+  - name: schema_id
+    type: String
+    description: "The ID of the training schema to update"
+  - name: training_metadata
+    type: String
+    description: "Training metadata JSON from clustering training component"
+  - name: model_id
+    type: String
+    description: "The ID of the model"
+  - name: execution_id
+    type: String
+    description: "The ID of the execution"
+  - name: tenant_id
+    type: String
+    description: "The ID of the tenant"
+  - name: project_id
+    type: String
+    description: "The ID of the project"
+  - name: bearer_auth_token
+    type: String
+    description: "Bearer token for authentication"
+  - name: domain
+    type: String
+    description: "The domain for the API endpoint"
+
+outputs:
+  - name: training_schema_updated
+    type: String
+    description: "Confirmation of training schema update"
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v23
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import json
+        import argparse
+        import requests
+        import time
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import os
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--schema_id', type=str, required=True)
+        parser.add_argument('--training_metadata', type=str, required=True)
+        parser.add_argument('--model_id', type=str, required=True)
+        parser.add_argument('--execution_id', type=str, required=True)
+        parser.add_argument('--tenant_id', type=str, required=True)
+        parser.add_argument('--project_id', type=str, required=True)
+        parser.add_argument('--bearer_auth_token', type=str, required=True)
+        parser.add_argument('--domain', type=str, required=True)
+        parser.add_argument('--training_schema_updated', type=str, required=True)
+        args = parser.parse_args()
+
+        print("="*80)
+        print("CLUSTERING TRAINING SCHEMA UPDATER")
+        print("="*80)
+
+        # Create output directory
+        output_dir = os.path.dirname(args.training_schema_updated)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Read input files
+        print("")
+        print("Loading inputs...")
+        
+        with open(args.training_metadata, 'r') as f:
+            metadata = json.load(f)
+        print("Training metadata loaded")
+        
+        with open(args.bearer_auth_token, 'r') as f:
+            bearer_auth_token = f.read().strip()
+        
+        with open(args.tenant_id, 'r') as f:
+            tenant_id = f.read().strip()
+
+        # Parse execution_id to int (primary key)
+        try:
+            execution_id_int = int(args.execution_id)
+        except (ValueError, TypeError):
+            print(f"Warning: execution_id '{args.execution_id}' is not a valid integer. Using 0.")
+            execution_id_int = 0
+
+        # Extract info from metadata
+        algorithm = metadata.get('algorithm', 'Unknown')
+        category = metadata.get('category', 'unknown')
+        training_results = metadata.get('training_results', {})
+        parameters = metadata.get('parameters', {})
+        
+        n_train_samples = training_results.get('n_train_samples', 0)
+        n_features = training_results.get('n_features', 0)
+        n_clusters = training_results.get('n_clusters', 0)
+        n_noise = training_results.get('n_noise', 0)
+        noise_percentage = training_results.get('noise_percentage', 0.0)
+        cluster_sizes = training_results.get('cluster_sizes', {})
+
+        print("")
+        print("Training summary:")
+        print(f"  Algorithm: {algorithm}")
+        print(f"  Category: {category}")
+        print(f"  Samples: {n_train_samples}")
+        print(f"  Features: {n_features}")
+        print(f"  Clusters: {n_clusters}")
+        print(f"  Noise points: {n_noise}")
+
+        # Create custom_metrics with all training info
+        custom_metrics_dict = {
+            "algorithm": algorithm,
+            "category": category,
+            "parameters": parameters,
+            "train_samples": n_train_samples,
+            "n_features": n_features,
+            "n_clusters": n_clusters,
+            "n_noise": n_noise,
+            "noise_percentage": noise_percentage,
+            "cluster_sizes": cluster_sizes,
+            "training_complete": metadata.get('training_complete', True),
+            "capabilities": metadata.get('capabilities', {})
+        }
+
+        # Create training schema row
+        training_row = {
+            "execution_id": execution_id_int,
+            "projectId": args.project_id,
+            "model_id": args.model_id,
+            "epoch": 1,  # Clustering is not iterative
+            "loss": 0.0,  # Placeholder (no test metrics yet)
+            "accuracy": 0.0,  # Placeholder (no test metrics yet)
+            "validation_loss": 0.0,  # Placeholder
+            "validation_accuracy": 0.0,  # Placeholder
+            "tenant_id": tenant_id,
+            "timestamp": int(time.time() * 1000),
+            "training_mode": category,  # Use category as training mode
+            "custom_metrics": custom_metrics_dict
+        }
+
+        print("")
+        print("Training row prepared:")
+        print(json.dumps(training_row, indent=2))
+
+        # Set up API call
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {bearer_auth_token}'
+        }
+
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[408, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "PUT", "POST", "DELETE", "OPTIONS", "TRACE"],
+            backoff_factor=1
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        http = requests.Session()
+        http.mount("https://", adapter)
+        http.mount("http://", adapter)
+
+        # Check if row exists
+        check_url = f"{args.domain}/pi-entity-instances-service/v3.0/schemas/{args.schema_id}/instances/list"
+        check_payload = {
+            "dbType": "TIDB",
+            "ownedOnly": True,
+            "filter": {
+                "execution_id": execution_id_int,
+                "model_id": args.model_id,
+                "projectId": args.project_id
+            }
+        }
+
+        print("")
+        print(f"Checking for existing training record with execution_id: {execution_id_int}, model_id: {args.model_id}")
+        
+        try:
+            response = http.post(check_url, headers=headers, json=check_payload, timeout=60)
+            response.raise_for_status()
+            response_data = response.json()
+            
+            if response_data.get("content"):
+                print("Training record found: Updating row")
+                update_url = f"{args.domain}/pi-entity-instances-service/v2.0/schemas/{args.schema_id}/instances"
+                update_payload = {
+                    "dbType": "TIDB",
+                    "conditionalFilter": {
+                        "conditions": [
+                            {"field": "execution_id", "operator": "EQUAL", "value": execution_id_int},
+                            {"field": "model_id", "operator": "EQUAL", "value": args.model_id},
+                            {"field": "projectId", "operator": "EQUAL", "value": args.project_id}
+                        ]
+                    },
+                    "partialUpdateRequests": [{
+                        "patch": [
+                            {"operation": "REPLACE", "path": "epoch", "value": training_row["epoch"]},
+                            {"operation": "REPLACE", "path": "loss", "value": training_row["loss"]},
+                            {"operation": "REPLACE", "path": "accuracy", "value": training_row["accuracy"]},
+                            {"operation": "REPLACE", "path": "validation_loss", "value": training_row["validation_loss"]},
+                            {"operation": "REPLACE", "path": "validation_accuracy", "value": training_row["validation_accuracy"]},
+                            {"operation": "REPLACE", "path": "timestamp", "value": training_row["timestamp"]},
+                            {"operation": "REPLACE", "path": "training_mode", "value": training_row["training_mode"]},
+                            {"operation": "REPLACE", "path": "custom_metrics", "value": training_row["custom_metrics"]}
+                        ]
+                    }]
+                }
+                
+                response = http.patch(update_url, headers=headers, json=update_payload, timeout=60)
+                response.raise_for_status()
+                print("Successfully updated training record")
+            else:
+                print("No training record found: Creating new row")
+                create_url = f"{args.domain}/pi-entity-instances-service/v2.0/schemas/{args.schema_id}/instances"
+                create_payload = {"data": [training_row]}
+                
+                response = http.post(create_url, headers=headers, json=create_payload, timeout=60)
+                response.raise_for_status()
+                print("Successfully created new training record")
+            
+            print(f"Response: {response.json()}")
+            
+            # Write success confirmation
+            with open(args.training_schema_updated, 'w') as f:
+                json.dump({
+                    "status": "success",
+                    "message": "Training schema updated successfully",
+                    "algorithm": algorithm,
+                    "n_clusters": n_clusters
+                }, f)
+
+            print("")
+            print("="*80)
+            print("TRAINING SCHEMA UPDATE COMPLETED")
+            print("="*80)
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error: {e}")
+            if e.response is not None:
+                print(f"Response Status Code: {e.response.status_code}")
+                print(f"Response Content: {e.response.text}")
+            
+            # Write error confirmation
+            with open(args.training_schema_updated, 'w') as f:
+                json.dump({
+                    "status": "error",
+                    "message": str(e),
+                    "row_data": training_row
+                }, f)
+            exit(1)
+
+    args:
+      - --schema_id
+      - {inputValue: schema_id}
+      - --training_metadata
+      - {inputPath: training_metadata}
+      - --model_id
+      - {inputValue: model_id}
+      - --execution_id
+      - {inputValue: execution_id}
+      - --tenant_id
+      - {inputPath: tenant_id}
+      - --project_id
+      - {inputValue: project_id}
+      - --bearer_auth_token
+      - {inputPath: bearer_auth_token}
+      - --domain
+      - {inputValue: domain}
+      - --training_schema_updated
+      - {outputPath: training_schema_updated}
