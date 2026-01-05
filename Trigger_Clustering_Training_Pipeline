@@ -112,7 +112,6 @@ implementation:
         parser.add_argument('--password', required=True)
         parser.add_argument('--requestType', required=True)
         parser.add_argument('--productId', required=True)
-        parser.add_argument('--domine', required=True)
         parser.add_argument('--get_cdn', required=True)
         parser.add_argument('--model_schema_id', required=True)
         parser.add_argument('--train_schema_id', required=True)
