@@ -9,7 +9,7 @@ inputs:
   
   # Authentication and configuration
   - {name: bearer_token, type: String, description: "Bearer token for authentication"}
-  - {name: domain, type: String, description: "Domain for API endpoint"}
+  - {name: domine, type: String, description: "Domain for API endpoint (note: typo in original pipeline)"}
   
   # Pipeline trigger parameters
   - {name: next_pipeline_id, type: String, description: "Pipeline ID to trigger (Generic_Clustering_main)"}
@@ -35,16 +35,20 @@ inputs:
   # Additional parameters
   - {name: userName, type: String, description: "Username for IAM authentication"}
   - {name: password, type: String, description: "Password for IAM authentication"}
-  - {name: requesttype, type: String, description: "Request type for IAM authentication"}
-  - {name: productid, type: String, description: "Product ID for IAM authentication"}
+  - {name: requestType, type: String, description: "Request type for IAM authentication"}
+  - {name: productId, type: String, description: "Product ID for IAM authentication"}
+  - {name: get_cdn, type: String, description: "CDN base URL"}
   - {name: model_schema_id, type: String, description: "Schema ID for model metrics"}
   - {name: train_schema_id, type: String, description: "Schema ID for training history"}
   - {name: eval_schema_id, type: String, description: "Schema ID for evaluation metrics"}
   - {name: model_name, type: String, description: "Model name"}
-  - {name: get_cdn, type: String, description: "CDN base URL"}
+  - {name: version, type: String, default: "None", description: "Model version"}
   
   # Pipeline 3 trigger info (passed through)
   - {name: inference_pipeline_id, type: String, description: "Pipeline ID for inference (passed to training)"}
+  - {name: input_data, type: String, description: "Input data JSON for inference"}
+  - {name: evaluate, type: String, default: "true", description: "Whether to evaluate inference"}
+  - {name: infer_schema_id, type: String, description: "Schema ID for inference results"}
 
 outputs:
   - {name: trigger_response, type: String, description: "Raw response from pipeline trigger API"}
@@ -80,7 +84,7 @@ implementation:
         
         # Authentication
         parser.add_argument('--bearer_token', required=True)
-        parser.add_argument('--domain', required=True)
+        parser.add_argument('--domine', required=True)
         
         # Pipeline parameters
         parser.add_argument('--next_pipeline_id', required=True)
@@ -106,16 +110,21 @@ implementation:
         # Additional parameters
         parser.add_argument('--userName', required=True)
         parser.add_argument('--password', required=True)
-        parser.add_argument('--requesttype', required=True)
-        parser.add_argument('--productid', required=True)
+        parser.add_argument('--requestType', required=True)
+        parser.add_argument('--productId', required=True)
+        parser.add_argument('--domine', required=True)
+        parser.add_argument('--get_cdn', required=True)
         parser.add_argument('--model_schema_id', required=True)
         parser.add_argument('--train_schema_id', required=True)
         parser.add_argument('--eval_schema_id', required=True)
         parser.add_argument('--model_name', required=True)
-        parser.add_argument('--get_cdn', required=True)
+        parser.add_argument('--version', default='None')
         
         # Pipeline 3 info
         parser.add_argument('--inference_pipeline_id', required=True)
+        parser.add_argument('--input_data', required=True)
+        parser.add_argument('--evaluate', default='true')
+        parser.add_argument('--infer_schema_id', required=True)
         
         # Outputs
         parser.add_argument('--trigger_response', required=True)
@@ -174,7 +183,7 @@ implementation:
         print("[STEP 2] Triggering clustering training pipeline...")
         print("Note: Unlike XGBoost, clustering doesn't need combined pickle - passing URLs directly")
         
-        trigger_url = f"{args.domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={args.next_pipeline_id}"
+        trigger_url = f"{args.domine}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={args.next_pipeline_id}"
         
         # Build payload
         payload = {
@@ -199,6 +208,7 @@ implementation:
                 
                 # Validation
                 "thresholds": args.thresholds,
+                "version": args.version,
                 "version_strategy": args.version_strategy,
                 "registry_path": args.registry_path,
                 
@@ -206,13 +216,15 @@ implementation:
                 "execution_id": args.execution_id,
                 "model_id": args.model_id,
                 "project_id": args.project_id,
+                "experiment_id": args.experiment_id,
                 
-                # Authentication
+                # Authentication (matching exact parameter names)
                 "userName": args.userName,
                 "password": args.password,
-                "requesttype": args.requesttype,
-                "productid": args.productid,
-                "domine": args.domain,
+                "requestType": args.requestType,
+                "productId": args.productId,
+                "domine": args.domine,
+                "get_cdn": args.get_cdn,
                 
                 # Schema IDs
                 "model_schema_id": args.model_schema_id,
@@ -221,10 +233,12 @@ implementation:
                 
                 # Additional
                 "model_name": args.model_name,
-                "get_cdn": args.get_cdn,
                 
                 # Pipeline 3 info (passed through to training)
                 "inference_pipeline_id": args.inference_pipeline_id,
+                "input_data": args.input_data,
+                "evaluate": args.evaluate,
+                "infer_schema_id": args.infer_schema_id,
                 
                 # Empty placeholders for model CDN URLs (filled by training)
                 "model_cdn_url": "",
@@ -245,6 +259,14 @@ implementation:
         print(f"Pipeline ID: {args.next_pipeline_id}")
         print(f"Experiment ID: {args.experiment_id}")
         
+        # Write payload to temp file to avoid shell escaping issues with special characters
+        import tempfile
+        payload_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+        json.dump(payload, payload_file, indent=2)
+        payload_file.close()
+        
+        print(f"Payload written to: {payload_file.name}")
+        
         # Make the request
         curl_command = [
             "curl",
@@ -252,7 +274,7 @@ implementation:
             "--header", "accept: application/json",
             "--header", f"Authorization: Bearer {bearer_token}",
             "--header", "Content-Type: application/json",
-            "--data", json.dumps(payload),
+            "--data", f"@{payload_file.name}",
             "--fail",
             "--show-error",
             "--connect-timeout", "30",
@@ -297,6 +319,13 @@ implementation:
                 else:
                     raise
         
+        # Clean up temp file
+        try:
+            os.unlink(payload_file.name)
+            print(f"Cleaned up temp file: {payload_file.name}")
+        except:
+            pass
+        
         # Step 3: Save CDN URLs JSON
         print("")
         print("[STEP 3] Saving CDN URLs...")
@@ -337,8 +366,8 @@ implementation:
       # Authentication
       - --bearer_token
       - {inputPath: bearer_token}
-      - --domain
-      - {inputValue: domain}
+      - --domine
+      - {inputValue: domine}
       
       # Pipeline parameters
       - --next_pipeline_id
@@ -381,10 +410,12 @@ implementation:
       - {inputValue: userName}
       - --password
       - {inputValue: password}
-      - --requesttype
-      - {inputValue: requesttype}
-      - --productid
-      - {inputValue: productid}
+      - --requestType
+      - {inputValue: requestType}
+      - --productId
+      - {inputValue: productId}
+      - --get_cdn
+      - {inputValue: get_cdn}
       - --model_schema_id
       - {inputValue: model_schema_id}
       - --train_schema_id
@@ -393,12 +424,18 @@ implementation:
       - {inputValue: eval_schema_id}
       - --model_name
       - {inputValue: model_name}
-      - --get_cdn
-      - {inputValue: get_cdn}
+      - --version
+      - {inputValue: version}
       
       # Pipeline 3
       - --inference_pipeline_id
       - {inputValue: inference_pipeline_id}
+      - --input_data
+      - {inputValue: input_data}
+      - --evaluate
+      - {inputValue: evaluate}
+      - --infer_schema_id
+      - {inputValue: infer_schema_id}
       
       # Outputs
       - --trigger_response
