@@ -6,7 +6,7 @@ inputs:
     type: String
     description: "The ID of the model schema to update"
   - name: training_metadata
-    type: String
+    type: Data
     description: "Training metadata JSON from clustering training component"
   - name: model_cdn_url
     type: String
@@ -62,7 +62,7 @@ implementation:
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--schema_id', type=str, required=True)
-        parser.add_argument('--training_metadata', type=str, required=True)
+        parser.add_argument('--training_metadata', type=str, required=True)  # ✅ Now reads as file path
         parser.add_argument('--model_cdn_url', type=str, default="")
         parser.add_argument('--metadata_cdn_url', type=str, default="")
         parser.add_argument('--model_id', type=str, required=True)
@@ -88,13 +88,16 @@ implementation:
         print("")
         print("Loading inputs...")
         
+        # ✅ FIXED: Read training_metadata as FILE (not string)
         with open(args.training_metadata, 'r') as f:
             metadata = json.load(f)
         print("Training metadata loaded")
         
+        # ✅ Read bearer token as FILE
         with open(args.bearer_auth_token, 'r') as f:
             bearer_auth_token = f.read().strip()
         
+        # ✅ Read tenant_id as FILE
         with open(args.tenant_id, 'r') as f:
             tenant_id = f.read().strip()
 
@@ -165,7 +168,7 @@ implementation:
             "tenant_id": tenant_id,
             "projectId": args.project_id,
             "name": model_name,
-            "architecture_type": "clustering", 
+            "architecture_type": "GRM",
             "symbolic_profile": symbolic_profile,
             "input_shape": input_shape,
             "output_shape": output_shape,
@@ -297,7 +300,7 @@ implementation:
       - --schema_id
       - {inputValue: schema_id}
       - --training_metadata
-      - {inputPath: training_metadata}
+      - {inputPath: training_metadata}  # ✅ FIXED: inputPath (not inputValue)
       - --model_cdn_url
       - {inputValue: model_cdn_url}
       - --metadata_cdn_url
