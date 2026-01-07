@@ -1,4 +1,4 @@
-name: Trigger Clustering Training Pipeline
+name: Trigger Clustering Training Pipeline111
 description: Reads CDN URLs from preprocessing and triggers clustering training pipeline
 
 inputs:
@@ -249,14 +249,9 @@ implementation:
         print("="*80)
 
         print("")
-        print("[DEBUG] Triggering pipeline at: {0}".format(trigger_url))
-        print("[DEBUG] Selected Pipeline ID: {0}".format(args.next_pipeline_id))
-        print("[DEBUG] Experiment ID: {0}".format(args.experiment_id))
-        print("[DEBUG] Model ID: {0}".format(args.model_id))
-        print("[DEBUG] Execution ID: {0}".format(args.execution_id))
-        print("[DEBUG] Training Algorithm: {0}".format(args.training_algorithm))
-        print("[DEBUG] Payload:")
-        print(json.dumps(payload, indent=2))
+        print(f"Trigger URL: {trigger_url}")
+        print(f"Pipeline ID: {args.next_pipeline_id}")
+        print(f"Experiment ID: {args.experiment_id}")
         
         # Headers for requests
         headers = {
@@ -301,6 +296,7 @@ implementation:
                     resp.raise_for_status()
                 
                 # Success!
+                print("Trigger successful!")
                 response_text = resp.text
                 
                 # Save trigger response
@@ -308,23 +304,11 @@ implementation:
                 with open(args.trigger_response, "w") as f:
                     f.write(response_text)
                 
-                # Parse and check for runId
+                # Parse and print response
                 try:
                     response_json = json.loads(response_text)
-                    run_id = response_json.get('runId', '')
-                    
-                    if run_id:
-                        print("[SUCCESS] Pipeline triggered successfully")
-                        print("[SUCCESS] Run ID: {0}".format(run_id))
-                    else:
-                        print("[WARNING] Trigger accepted but NO RUN ID returned!")
-                        print("[WARNING] This means the pipeline was NOT actually started")
-                        print("[WARNING] Most likely cause: Pipeline components not registered in catalog")
-                    
-                    print("[SUCCESS] Response:")
-                    print(json.dumps(response_json, indent=2))
-                except Exception as e:
-                    print(f"[WARNING] Could not parse response as JSON: {e}")
+                    print(f"Response: {json.dumps(response_json, indent=2)}")
+                except:
                     print(f"Raw response: {response_text}")
                 
                 break
