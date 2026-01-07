@@ -176,14 +176,14 @@ implementation:
         
         trigger_url = f"{args.domine}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={args.next_pipeline_id}"
         
-        # Build payload (registry_path REMOVED from parameters)
+        # Build payload - matching exact format from working example
         payload = {
             "pipelineType": "ML",
             "containerResources": {},
             "experimentId": args.experiment_id,
             "enableCaching": True,
             "parameters": {
-                # CDN URLs - downloaded by CDN Downloader in training pipeline
+                # CDN URLs
                 "train_data_cdn_url": cdn_urls["train_data_cdn"],
                 "test_data_cdn_url": cdn_urls["test_data_cdn"],
                 "test_ground_truth_cdn_url": cdn_urls["test_ground_truth_cdn"],
@@ -197,9 +197,8 @@ implementation:
                 "dataset_name": args.dataset_name,
                 "per_cluster": args.per_cluster,
                 
-                # Validation (registry_path REMOVED)
+                # Validation
                 "thresholds": args.thresholds,
-                "version": args.version,
                 "version_strategy": args.version_strategy,
                 
                 # IDs
@@ -213,7 +212,6 @@ implementation:
                 "password": args.password,
                 "requestType": args.requestType,
                 "productId": args.productId,
-                "domine": args.domine,
                 "get_cdn": args.get_cdn,
                 
                 # Schema IDs
@@ -221,18 +219,14 @@ implementation:
                 "train_schema_id": args.train_schema_id,
                 "eval_schema_id": args.eval_schema_id,
                 
-                # Additional
+                # Model name
                 "model_name": args.model_name,
                 
-                # Pipeline 3 info (passed through to training)
+                # Pipeline 3 info (passed through)
                 "inference_pipeline_id": args.inference_pipeline_id,
                 "input_data": args.input_data,
                 "evaluate": args.evaluate,
-                "infer_schema_id": args.infer_schema_id,
-                
-                # Empty placeholders for model CDN URLs (filled by training)
-                "model_cdn_url": "",
-                "metadata_cdn_url": ""
+                "infer_schema_id": args.infer_schema_id
             },
             "version": 1
         }
