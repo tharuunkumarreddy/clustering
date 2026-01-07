@@ -1,4 +1,4 @@
-name: Trigger Clustering Inference Pipeline111
+name: Trigger Clustering Inference Pipeline
 description: Reads model CDN URLs from training and triggers clustering inference pipeline
 
 inputs:
@@ -132,14 +132,14 @@ implementation:
         
         trigger_url = f"{args.domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={args.inference_pipeline_id}"
         
-        # Build payload
+        # Build payload - matching exact format from working example
         payload = {
             "pipelineType": "ML",
             "containerResources": {},
             "experimentId": args.experiment_id,
             "enableCaching": True,
             "parameters": {
-                # Model CDN URLs - downloaded by CDN Downloader in inference pipeline
+                # Model CDN URLs
                 "train_model_cdn_url": model_urls["model_cdn"],
                 "train_metadata_cdn_url": model_urls["metadata_cdn"],
                 
@@ -157,7 +157,6 @@ implementation:
                 "password": args.password,
                 "requestType": args.requesttype,
                 "productId": args.productid,
-                "domine": args.domain,
                 
                 # Schema ID
                 "infer_schema_id": args.infer_schema_id
@@ -173,9 +172,11 @@ implementation:
         print("="*80)
 
         print("")
-        print(f"Trigger URL: {trigger_url}")
-        print(f"Pipeline ID: {args.inference_pipeline_id}")
-        print(f"Experiment ID: {args.experiment_id}")
+        print("[DEBUG] Triggering pipeline at: {0}".format(trigger_url))
+        print("[DEBUG] Selected Pipeline ID: {0}".format(args.inference_pipeline_id))
+        print("[DEBUG] Experiment ID: {0}".format(args.experiment_id))
+        print("[DEBUG] Model ID: {0}".format(args.model_id))
+        print("[DEBUG] Execution ID: {0}".format(args.execution_id))
         
         # Headers for requests
         headers = {
@@ -184,7 +185,7 @@ implementation:
             "Content-Type": "application/json"
         }
         
-        # Make the request using requests library (more reliable than curl)
+        # Make the request using requests library
         print("")
         print("Sending trigger request...")
         retries = 3
@@ -220,7 +221,6 @@ implementation:
                     resp.raise_for_status()
                 
                 # Success!
-                print("Trigger successful!")
                 response_text = resp.text
                 
                 # Save trigger response
@@ -228,11 +228,23 @@ implementation:
                 with open(args.trigger_response, "w") as f:
                     f.write(response_text)
                 
-                # Parse and print response
+                # Parse and check for runId
                 try:
                     response_json = json.loads(response_text)
-                    print(f"Response: {json.dumps(response_json, indent=2)}")
-                except:
+                    run_id = response_json.get('runId', '')
+                    
+                    if run_id:
+                        print("[SUCCESS] Pipeline triggered successfully")
+                        print("[SUCCESS] Run ID: {0}".format(run_id))
+                    else:
+                        print("[WARNING] Trigger accepted but NO RUN ID returned!")
+                        print("[WARNING] This means the pipeline was NOT actually started")
+                        print("[WARNING] Most likely cause: Pipeline connection errors or missing components")
+                    
+                    print("[SUCCESS] Response:")
+                    print(json.dumps(response_json, indent=2))
+                except Exception as e:
+                    print(f"[WARNING] Could not parse response as JSON: {e}")
                     print(f"Raw response: {response_text}")
                 
                 break
