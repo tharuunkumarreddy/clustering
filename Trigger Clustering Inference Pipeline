@@ -1,4 +1,4 @@
-name: Trigger Clustering Inference Pipeline
+name: Trigger Clustering Inference Pipeline111
 description: Reads model CDN URLs from training and triggers clustering inference pipeline
 
 inputs:
@@ -36,22 +36,16 @@ implementation:
   container:
     image: nikhilv215/nesy-factory:v23
     command:
-      - sh
-      - -ec
-      - |
-        if ! command -v curl >/dev/null 2>&1; then
-          apt-get update >/dev/null && apt-get install -y curl >/dev/null
-        fi
-        exec "$0" "$@"
       - python3
       - -u
       - -c
       - |
         import argparse
-        import subprocess
         import json
         import os
         import time
+        import sys
+        import requests
 
         parser = argparse.ArgumentParser()
 
@@ -183,34 +177,51 @@ implementation:
         print(f"Pipeline ID: {args.inference_pipeline_id}")
         print(f"Experiment ID: {args.experiment_id}")
         
-        # Make the request
-        curl_command = [
-            "curl",
-            "--location", trigger_url,
-            "--header", "accept: application/json",
-            "--header", f"Authorization: Bearer {bearer_token}",
-            "--header", "Content-Type: application/json",
-            "--data", json.dumps(payload),
-            "--fail",
-            "--show-error",
-            "--connect-timeout", "30",
-            "--silent"
-        ]
+        # Headers for requests
+        headers = {
+            "accept": "application/json",
+            "Authorization": f"Bearer {bearer_token}",
+            "Content-Type": "application/json"
+        }
         
+        # Make the request using requests library (more reliable than curl)
         print("")
         print("Sending trigger request...")
         retries = 3
         for i in range(retries):
             try:
-                process = subprocess.run(
-                    curl_command,
-                    capture_output=True,
-                    check=True,
-                    text=True
+                resp = requests.post(
+                    trigger_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=60
                 )
                 
+                if not resp.ok:
+                    error_detail = ""
+                    try:
+                        error_json = resp.json()
+                        error_detail = json.dumps(error_json, indent=2)
+                    except:
+                        error_detail = resp.text
+                    
+                    print(f"[ERROR] Trigger failed with status {resp.status_code}", file=sys.stderr)
+                    print(f"[ERROR] Response: {error_detail}", file=sys.stderr)
+                    
+                    if resp.status_code == 404:
+                        print("[ERROR] Pipeline not found. Please verify:", file=sys.stderr)
+                        print(f"  - Pipeline ID is correct: {args.inference_pipeline_id}", file=sys.stderr)
+                        print(f"  - Domain is correct: {args.domain}", file=sys.stderr)
+                    elif resp.status_code == 401 or resp.status_code == 403:
+                        print("[ERROR] Authentication/Authorization failed", file=sys.stderr)
+                    elif resp.status_code == 500:
+                        print("[ERROR] Server error - check if pipeline components are registered", file=sys.stderr)
+                    
+                    resp.raise_for_status()
+                
+                # Success!
                 print("Trigger successful!")
-                response_text = process.stdout
+                response_text = resp.text
                 
                 # Save trigger response
                 os.makedirs(os.path.dirname(args.trigger_response), exist_ok=True)
@@ -226,13 +237,13 @@ implementation:
                 
                 break
                 
-            except subprocess.CalledProcessError as e:
-                print(f"Attempt {i+1} failed: {e.returncode}")
-                print(f"Error: {e.stderr}")
+            except requests.exceptions.RequestException as e:
+                print(f"Attempt {i+1} failed: {str(e)}", file=sys.stderr)
                 if i < retries - 1:
                     print(f"Retrying in 10 seconds...")
                     time.sleep(10)
                 else:
+                    print(f"[ERROR] All {retries} attempts failed", file=sys.stderr)
                     raise
         
         # Step 3: Save model URLs JSON
